@@ -1,0 +1,48 @@
+seed: 0
+
+wandb:
+  enabled: false
+  project: crowd-reaction-analysis
+  entity: null
+  run_name: null
+  tags: []
+  notes: null
+  mode: online
+
+model:
+  beats_checkpoint_path: /absolute/path/to/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
+  num_classes: 2
+  head_hidden_dim: 256
+  head_dropout: 0.1
+
+optimizer:
+  lr: 1.0e-4
+  weight_decay: 1.0e-4
+
+loss:
+  class_weights: [1.0, 1.0]
+
+trainer:
+  epochs: 25
+
+train:
+  weak_metadata_csv: /absolute/path/to/train_weak.csv
+  sample_rate: 16000
+  chunk_sec: 30.0
+  instance_sec: 1.0
+  num_classes: 2
+  batch_size: 4
+  num_workers: 0
+
+val:
+  weak_metadata_csv: /absolute/path/to/val_weak.csv
+  strong_metadata_csv: /absolute/path/to/val_strong.csv
+  sample_rate: 16000
+  chunk_sec: 30.0
+  instance_sec: 1.0
+  num_classes: 2
+  batch_size: 4
+  num_workers: 0
+  threshold: 0.5
+  event_collar_sec: 1.0
+  event_offset_ratio: 0.2
