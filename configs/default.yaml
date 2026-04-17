@@ -9,6 +9,16 @@ wandb:
   notes: null
   mode: online
 
+data:
+  audios_info_csv: data/audios_info.csv
+  weak_labels_csv: data/weak_labelling/_weak_labels.csv
+  strong_labels_dir: data/strong_labelling
+  original_audio_dir: data/original_audio_files
+  sample_rate: 16000
+  chunk_sec: 20.0
+  instance_sec: 1.0
+  num_classes: 2
+
 model:
   beats_checkpoint_path: /absolute/path/to/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
   num_classes: 2
@@ -26,21 +36,10 @@ trainer:
   epochs: 25
 
 train:
-  weak_metadata_csv: /absolute/path/to/train_weak.csv
-  sample_rate: 16000
-  chunk_sec: 30.0
-  instance_sec: 1.0
-  num_classes: 2
   batch_size: 4
   num_workers: 0
 
 val:
-  weak_metadata_csv: /absolute/path/to/val_weak.csv
-  strong_metadata_csv: /absolute/path/to/val_strong.csv
-  sample_rate: 16000
-  chunk_sec: 30.0
-  instance_sec: 1.0
-  num_classes: 2
   batch_size: 4
   num_workers: 0
   threshold: 0.5

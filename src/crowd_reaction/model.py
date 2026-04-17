@@ -96,7 +96,7 @@ class CrowdReactionModel(nn.Module):
         head_hidden_dim: int = 256,
         head_dropout: float = 0.1,
         sample_rate: int = 16000,
-        chunk_sec: float = 30.0,
+        chunk_sec: float = 20.0,
         instance_sec: float = 1.0,
     ) -> None:
         super().__init__()

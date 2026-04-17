@@ -68,10 +68,10 @@ def test_strong_eval_merges_overlapping_chunks() -> None:
 
 
 def test_synthetic_one_step_training_smoke() -> None:
-    model = CrowdReactionModel(num_classes=2, feature_extractor=DummyFeatureExtractor(output_dim=8))
+    model = CrowdReactionModel(num_classes=2, feature_extractor=DummyFeatureExtractor(output_dim=8), chunk_sec=20.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
 
-    instances = torch.randn(3, 30, 32)
+    instances = torch.randn(3, 20, 32)
     labels = torch.tensor(
         [
             [1.0, 0.0],
@@ -85,6 +85,6 @@ def test_synthetic_one_step_training_smoke() -> None:
     loss.backward()
     optimizer.step()
 
-    assert logits.shape == (3, 30, 2)
+    assert logits.shape == (3, 20, 2)
     assert bag_probs.shape == (3, 2)
     assert float(loss.detach().item()) > 0.0

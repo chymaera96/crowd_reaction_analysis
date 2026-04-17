@@ -19,7 +19,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from crowd_reaction.data import WeakChunkDataset, collate_batch, read_strong_events, speech_durations_from_records
+from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
 from crowd_reaction.eval import collect_strong_predictions, evaluate_strong, evaluate_weak
 from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss
 
@@ -54,19 +54,19 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def build_dataloader(config: dict[str, Any], metadata_csv: str, shuffle: bool) -> DataLoader:
+def build_dataloader(data_config: dict[str, Any], loader_config: dict[str, Any], records, shuffle: bool) -> DataLoader:
     dataset = WeakChunkDataset(
-        metadata_csv,
-        sample_rate=int(config["sample_rate"]),
-        chunk_sec=float(config["chunk_sec"]),
-        instance_sec=float(config["instance_sec"]),
-        num_classes=int(config["num_classes"]),
+        records,
+        sample_rate=int(data_config["sample_rate"]),
+        chunk_sec=float(data_config["chunk_sec"]),
+        instance_sec=float(data_config["instance_sec"]),
+        num_classes=int(data_config["num_classes"]),
     )
     return DataLoader(
         dataset,
-        batch_size=int(config["batch_size"]),
+        batch_size=int(loader_config["batch_size"]),
         shuffle=shuffle,
-        num_workers=int(config.get("num_workers", 0)),
+        num_workers=int(loader_config.get("num_workers", 0)),
         collate_fn=collate_batch,
     )
 
@@ -75,7 +75,7 @@ def evaluate_epoch(
     model: CrowdReactionModel,
     val_loader: DataLoader,
     *,
-    strong_events_path: str | None,
+    strong_events,
     instance_sec: float,
     num_classes: int,
     threshold: float,
@@ -87,8 +87,7 @@ def evaluate_epoch(
     weak_metrics = evaluate_weak(weak_targets, weak_probs, threshold=threshold)
 
     strong_metrics: dict[str, Any] | None = None
-    if strong_events_path:
-        strong_events = read_strong_events(strong_events_path)
+    if strong_events:
         speech_durations = speech_durations_from_records(val_loader.dataset.records)
         strong_metrics = evaluate_strong(
             chunk_predictions,
@@ -178,17 +177,24 @@ def main() -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     wandb_run = init_wandb(config, output_dir)
 
-    train_loader = build_dataloader(config["train"], config["train"]["weak_metadata_csv"], shuffle=True)
-    val_loader = build_dataloader(config["val"], config["val"]["weak_metadata_csv"], shuffle=False)
+    split_datasets = build_split_records(
+        audios_info_csv=config["data"]["audios_info_csv"],
+        weak_labels_csv=config["data"]["weak_labels_csv"],
+        strong_labels_dir=config["data"]["strong_labels_dir"],
+        original_audio_dir=config["data"]["original_audio_dir"],
+    )
+
+    train_loader = build_dataloader(config["data"], config["train"], split_datasets.train_records, shuffle=True)
+    val_loader = build_dataloader(config["data"], config["val"], split_datasets.val_records, shuffle=False)
 
     model = CrowdReactionModel(
         num_classes=int(config["model"]["num_classes"]),
         beats_checkpoint_path=config["model"]["beats_checkpoint_path"],
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
-        sample_rate=int(config["train"]["sample_rate"]),
-        chunk_sec=float(config["train"]["chunk_sec"]),
-        instance_sec=float(config["train"]["instance_sec"]),
+        sample_rate=int(config["data"]["sample_rate"]),
+        chunk_sec=float(config["data"]["chunk_sec"]),
+        instance_sec=float(config["data"]["instance_sec"]),
     ).to(device)
 
     optimizer = torch.optim.AdamW(
@@ -227,11 +233,11 @@ def main() -> None:
         metrics = evaluate_epoch(
             model,
             val_loader,
-            strong_events_path=config["val"].get("strong_metadata_csv"),
-            instance_sec=float(config["val"]["instance_sec"]),
+            strong_events=split_datasets.strong_events,
+            instance_sec=float(config["data"]["instance_sec"]),
             num_classes=int(config["model"]["num_classes"]),
             threshold=float(config["val"].get("threshold", 0.5)),
-            event_collar_sec=float(config["val"].get("event_collar_sec", config["val"]["instance_sec"])),
+            event_collar_sec=float(config["val"].get("event_collar_sec", config["data"]["instance_sec"])),
             event_offset_ratio=float(config["val"].get("event_offset_ratio", 0.2)),
             device=device,
         )

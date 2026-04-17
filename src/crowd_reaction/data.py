@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -9,21 +11,10 @@ import torch
 import torchaudio
 
 
-DEFAULT_WEAK_COLUMNS = (
-    "audio_path",
-    "speech_id",
-    "chunk_start_sec",
-    "chunk_end_sec",
-    "label_0",
-    "label_1",
-)
-
-DEFAULT_STRONG_COLUMNS = (
-    "speech_id",
-    "event_class",
-    "onset_sec",
-    "offset_sec",
-)
+DISAPPROVAL_LABELS = {"clear_disapproval", "unclear_disapproval"}
+APPROVAL_LABELS = {"clear_approval", "unclear_approval"}
+STRONG_TEXT_GLOB = "noise_*.txt"
+SEGMENT_SUFFIX_PATTERN = re.compile(r"_seg\d+$", flags=re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -33,6 +24,7 @@ class WeakChunkRecord:
     chunk_start_sec: float
     chunk_end_sec: float
     labels: tuple[float, ...]
+    split: str
 
 
 @dataclass(frozen=True)
@@ -43,47 +35,66 @@ class StrongEvent:
     offset_sec: float
 
 
-def _validate_columns(df: pd.DataFrame, required: tuple[str, ...], csv_path: str) -> None:
-    missing = [column for column in required if column not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in {csv_path}: {missing}")
+@dataclass(frozen=True)
+class SplitDatasets:
+    train_records: list[WeakChunkRecord]
+    val_records: list[WeakChunkRecord]
+    strong_events: list[StrongEvent]
 
 
-def read_weak_metadata(csv_path: str, num_classes: int = 2) -> list[WeakChunkRecord]:
-    df = pd.read_csv(csv_path)
-    required = DEFAULT_WEAK_COLUMNS[:4] + tuple(f"label_{idx}" for idx in range(num_classes))
-    _validate_columns(df, required, csv_path)
-    base_dir = str(Path(csv_path).resolve().parent)
+def normalize_name(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", str(value)).strip()
+    normalized = normalized.replace("\\", "/").split("/")[-1]
+    if normalized.lower().startswith("noise_"):
+        normalized = normalized[6:]
+    normalized = re.sub(r"\.[^.]+$", "", normalized)
+    normalized = SEGMENT_SUFFIX_PATTERN.sub("", normalized)
 
-    records: list[WeakChunkRecord] = []
-    for row in df.itertuples(index=False):
-        labels = tuple(float(getattr(row, f"label_{idx}")) for idx in range(num_classes))
-        records.append(
-            WeakChunkRecord(
-                audio_path=resolve_path(base_dir, str(getattr(row, "audio_path"))),
-                speech_id=str(getattr(row, "speech_id")),
-                chunk_start_sec=float(getattr(row, "chunk_start_sec")),
-                chunk_end_sec=float(getattr(row, "chunk_end_sec")),
-                labels=labels,
-            )
-        )
-    return records
+    translation = str.maketrans(
+        {
+            "’": "'",
+            "‘": "'",
+            "‚": "'",
+            "‛": "'",
+            "“": '"',
+            "”": '"',
+            "„": '"',
+            "‟": '"',
+            "–": "-",
+            "—": "-",
+            "―": "-",
+            "‐": "-",
+            "｜": "|",
+            "：": ":",
+            "？": "?",
+            "！": "!",
+            "＂": '"',
+            "／": "/",
+            "＆": "&",
+            "＃": "#",
+        }
+    )
+    normalized = normalized.translate(translation)
+    normalized = unicodedata.normalize("NFKD", normalized)
+    normalized = normalized.encode("ascii", "ignore").decode("ascii")
+    normalized = normalized.lower()
+    normalized = "".join(ch for ch in normalized if ch.isalnum())
+    return normalized
 
 
-def read_strong_events(csv_path: str) -> list[StrongEvent]:
-    df = pd.read_csv(csv_path)
-    _validate_columns(df, DEFAULT_STRONG_COLUMNS, csv_path)
-    events: list[StrongEvent] = []
-    for row in df.itertuples(index=False):
-        events.append(
-            StrongEvent(
-                speech_id=str(getattr(row, "speech_id")),
-                event_class=int(getattr(row, "event_class")),
-                onset_sec=float(getattr(row, "onset_sec")),
-                offset_sec=float(getattr(row, "offset_sec")),
-            )
-        )
-    return events
+def weak_row_to_labels(row: pd.Series) -> tuple[float, float]:
+    disapproval = float(any(int(row.get(column, 0) or 0) > 0 for column in DISAPPROVAL_LABELS))
+    approval = float(any(int(row.get(column, 0) or 0) > 0 for column in APPROVAL_LABELS))
+    return (disapproval, approval)
+
+
+def strong_label_to_class(label: str) -> int | None:
+    label = str(label).strip()
+    if label in DISAPPROVAL_LABELS:
+        return 0
+    if label in APPROVAL_LABELS:
+        return 1
+    return None
 
 
 def _resample_if_needed(waveform: torch.Tensor, source_sr: int, target_sr: int) -> torch.Tensor:
@@ -122,10 +133,8 @@ def slice_waveform(
     chunk = waveform[start_sample:end_sample]
     if target_num_samples is None:
         return chunk
-
     if chunk.numel() >= target_num_samples:
         return chunk[:target_num_samples]
-
     padded = torch.zeros(target_num_samples, dtype=waveform.dtype)
     padded[: chunk.numel()] = chunk
     return padded
@@ -143,7 +152,6 @@ def split_into_instances(
         raise ValueError("instance_sec must be positive")
     if expected_samples <= 0:
         raise ValueError("chunk_sec must be positive")
-
     if chunk_waveform.numel() != expected_samples:
         chunk_waveform = slice_waveform(
             chunk_waveform,
@@ -152,29 +160,162 @@ def split_into_instances(
             sample_rate=sample_rate,
             target_num_samples=expected_samples,
         )
-
     num_instances = expected_samples // instance_samples
     if num_instances * instance_samples != expected_samples:
         raise ValueError("chunk_sec must be divisible by instance_sec")
     return chunk_waveform.view(num_instances, instance_samples)
 
 
+def _truthy_strong_label(value: Any) -> bool:
+    if pd.isna(value):
+        return False
+    if isinstance(value, str):
+        return value.strip() not in {"", "0", "false", "False", "nan", "None"}
+    return bool(value)
+
+
+def _build_original_audio_index(original_audio_dir: str) -> dict[str, Path]:
+    index: dict[str, Path] = {}
+    for audio_path in sorted(Path(original_audio_dir).glob("*.wav")):
+        key = normalize_name(audio_path.name)
+        if key in index and index[key] != audio_path:
+            raise ValueError(f"Ambiguous original audio filename normalization for {audio_path.name}")
+        index[key] = audio_path.resolve()
+    return index
+
+
+def _build_audio_info_index(audios_info_csv: str) -> dict[str, bool]:
+    df = pd.read_csv(audios_info_csv)
+    required = {"title", "strong_label"}
+    missing = sorted(required - set(df.columns))
+    if missing:
+        raise ValueError(f"Missing columns in {audios_info_csv}: {missing}")
+
+    index: dict[str, bool] = {}
+    for row in df.itertuples(index=False):
+        key = normalize_name(getattr(row, "title"))
+        strong = _truthy_strong_label(getattr(row, "strong_label"))
+        index[key] = index.get(key, False) or strong
+    return index
+
+
+def parse_strong_label_file(strong_txt_path: str, speech_id: str) -> list[StrongEvent]:
+    events: list[StrongEvent] = []
+    with open(strong_txt_path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.split("\t")
+            if len(parts) != 3:
+                raise ValueError(f"Malformed strong label line {line_number} in {strong_txt_path}: {stripped}")
+            onset_sec, offset_sec, label = parts
+            class_index = strong_label_to_class(label)
+            if class_index is None:
+                continue
+            events.append(
+                StrongEvent(
+                    speech_id=speech_id,
+                    event_class=class_index,
+                    onset_sec=float(onset_sec),
+                    offset_sec=float(offset_sec),
+                )
+            )
+    return events
+
+
+def build_split_records(
+    *,
+    audios_info_csv: str,
+    weak_labels_csv: str,
+    strong_labels_dir: str,
+    original_audio_dir: str,
+) -> SplitDatasets:
+    audio_info_index = _build_audio_info_index(audios_info_csv)
+    original_audio_index = _build_original_audio_index(original_audio_dir)
+    weak_df = pd.read_csv(weak_labels_csv)
+
+    required_weak_columns = {
+        "source_file",
+        "start_sec",
+        "end_sec",
+        "clear_disapproval",
+        "unclear_disapproval",
+        "unclear_approval",
+        "clear_approval",
+    }
+    missing = sorted(required_weak_columns - set(weak_df.columns))
+    if missing:
+        raise ValueError(f"Missing columns in {weak_labels_csv}: {missing}")
+
+    strong_txt_by_key = {
+        normalize_name(path.name): path.resolve()
+        for path in sorted(Path(strong_labels_dir).glob(STRONG_TEXT_GLOB))
+    }
+
+    train_records: list[WeakChunkRecord] = []
+    val_records: list[WeakChunkRecord] = []
+    validation_speech_ids: dict[str, Path] = {}
+
+    for row in weak_df.itertuples(index=False):
+        source_file = str(getattr(row, "source_file"))
+        source_key = normalize_name(source_file)
+        audio_path = original_audio_index.get(source_key)
+        if audio_path is None:
+            raise ValueError(f"Weak row source file {source_file} does not match any original audio file")
+        if source_key not in audio_info_index:
+            raise ValueError(f"Weak row source file {source_file} does not match any row in {audios_info_csv}")
+
+        speech_id = audio_path.stem
+        labels = weak_row_to_labels(pd.Series(row._asdict()))
+        split = "val" if audio_info_index[source_key] else "train"
+        record = WeakChunkRecord(
+            audio_path=str(audio_path),
+            speech_id=speech_id,
+            chunk_start_sec=float(getattr(row, "start_sec")),
+            chunk_end_sec=float(getattr(row, "end_sec")),
+            labels=labels,
+            split=split,
+        )
+        if split == "val":
+            val_records.append(record)
+            validation_speech_ids[source_key] = audio_path
+        else:
+            train_records.append(record)
+
+    strong_events: list[StrongEvent] = []
+    for source_key, audio_path in validation_speech_ids.items():
+        strong_txt_path = strong_txt_by_key.get(source_key)
+        if strong_txt_path is None:
+            raise ValueError(f"Validation file {audio_path.name} is marked strong-labeled but has no matching TXT file")
+        strong_events.extend(parse_strong_label_file(strong_txt_path=str(strong_txt_path), speech_id=audio_path.stem))
+
+    for source_key, is_strong in audio_info_index.items():
+        if not is_strong:
+            continue
+        if source_key not in original_audio_index:
+            raise ValueError(f"Strong-labeled title key {source_key} has no matching original audio file")
+        if source_key not in strong_txt_by_key:
+            raise ValueError(f"Strong-labeled title key {source_key} has no matching strong TXT file")
+
+    return SplitDatasets(train_records=train_records, val_records=val_records, strong_events=strong_events)
+
+
 class WeakChunkDataset(torch.utils.data.Dataset):
     def __init__(
         self,
-        metadata_csv: str,
+        records: list[WeakChunkRecord],
         *,
         sample_rate: int = 16000,
-        chunk_sec: float = 30.0,
+        chunk_sec: float = 20.0,
         instance_sec: float = 1.0,
         num_classes: int = 2,
     ) -> None:
-        self.metadata_csv = metadata_csv
         self.sample_rate = int(sample_rate)
         self.chunk_sec = float(chunk_sec)
         self.instance_sec = float(instance_sec)
         self.num_classes = int(num_classes)
-        self.records = read_weak_metadata(metadata_csv, num_classes=num_classes)
+        self.records = list(records)
         self.chunk_num_samples = seconds_to_samples(self.chunk_sec, self.sample_rate)
         self.instances_per_chunk = int(round(self.chunk_sec / self.instance_sec))
         if self.instances_per_chunk * seconds_to_samples(self.instance_sec, self.sample_rate) != self.chunk_num_samples:
@@ -207,6 +348,7 @@ class WeakChunkDataset(torch.utils.data.Dataset):
             "audio_path": record.audio_path,
             "chunk_start_sec": torch.tensor(record.chunk_start_sec, dtype=torch.float32),
             "chunk_end_sec": torch.tensor(record.chunk_end_sec, dtype=torch.float32),
+            "split": record.split,
         }
 
 
@@ -219,6 +361,7 @@ def collate_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "audio_path": [item["audio_path"] for item in batch],
         "chunk_start_sec": torch.stack([item["chunk_start_sec"] for item in batch], dim=0),
         "chunk_end_sec": torch.stack([item["chunk_end_sec"] for item in batch], dim=0),
+        "split": [item["split"] for item in batch],
     }
 
 
@@ -227,10 +370,3 @@ def speech_durations_from_records(records: list[WeakChunkRecord]) -> dict[str, f
     for record in records:
         durations[record.speech_id] = max(durations.get(record.speech_id, 0.0), float(record.chunk_end_sec))
     return durations
-
-
-def resolve_path(base_dir: str | None, maybe_relative_path: str) -> str:
-    path = Path(maybe_relative_path)
-    if path.is_absolute() or base_dir is None:
-        return str(path)
-    return str((Path(base_dir) / path).resolve())
