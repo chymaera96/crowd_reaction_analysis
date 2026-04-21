@@ -27,6 +27,11 @@ Dataset inputs:
 - `data/strong_labelling/noise_*.txt` provides strong validation intervals
 - `data/original_audio_files/*.wav` are the only source audio files used for training and validation
 
+Known filename inconsistencies in `data/strong_labelling`:
+- `noise_Ukip's Douglas Carswell is booed while asking question at PMQs.txt` should be renamed to `noise_Ukip's Douglas Carswell is booed while asking question at PMQs - video.txt` so it matches the corresponding `.wav` filename.
+- `noise_Jonas brothers - crowd cheering.txt` should be renamed to `noise_Youtube-82b2ZF3L3XQ-Jonas brothers - crowd cheering.txt` so it matches the naming used by the corresponding source item.
+- The Jonas Brothers strong-label entry is also missing its matching audio file in `data/strong_labelling/`, so the `.txt` and `.wav` assets are currently inconsistent.
+
 Internal metadata:
 - weak records: `audio_path`, `speech_id`, `chunk_start_sec`, `chunk_end_sec`, `label_0`, `label_1`, `split`
 - strong events: `speech_id`, `event_class`, `onset_sec`, `offset_sec`

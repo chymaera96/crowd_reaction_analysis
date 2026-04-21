@@ -199,6 +199,19 @@ def _build_audio_info_index(audios_info_csv: str) -> dict[str, bool]:
     return index
 
 
+def _infer_validation_key(
+    source_key: str,
+    *,
+    audio_info_index: dict[str, bool],
+    strong_txt_by_key: dict[str, Path],
+) -> bool:
+    if source_key in audio_info_index:
+        return bool(audio_info_index[source_key])
+    if source_key in strong_txt_by_key:
+        return True
+    return False
+
+
 def parse_strong_label_file(strong_txt_path: str, speech_id: str) -> list[StrongEvent]:
     events: list[StrongEvent] = []
     with open(strong_txt_path, "r", encoding="utf-8") as handle:
@@ -263,12 +276,10 @@ def build_split_records(
         audio_path = original_audio_index.get(source_key)
         if audio_path is None:
             raise ValueError(f"Weak row source file {source_file} does not match any original audio file")
-        if source_key not in audio_info_index:
-            raise ValueError(f"Weak row source file {source_file} does not match any row in {audios_info_csv}")
 
         speech_id = audio_path.stem
         labels = weak_row_to_labels(pd.Series(row._asdict()))
-        split = "val" if audio_info_index[source_key] else "train"
+        split = "val" if _infer_validation_key(source_key, audio_info_index=audio_info_index, strong_txt_by_key=strong_txt_by_key) else "train"
         record = WeakChunkRecord(
             audio_path=str(audio_path),
             speech_id=speech_id,
@@ -293,9 +304,7 @@ def build_split_records(
     for source_key, is_strong in audio_info_index.items():
         if not is_strong:
             continue
-        if source_key not in original_audio_index:
-            raise ValueError(f"Strong-labeled title key {source_key} has no matching original audio file")
-        if source_key not in strong_txt_by_key:
+        if source_key in original_audio_index and source_key not in strong_txt_by_key:
             raise ValueError(f"Strong-labeled title key {source_key} has no matching strong TXT file")
 
     return SplitDatasets(train_records=train_records, val_records=val_records, strong_events=strong_events)
