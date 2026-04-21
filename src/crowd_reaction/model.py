@@ -90,7 +90,7 @@ class CrowdReactionModel(nn.Module):
     def __init__(
         self,
         *,
-        num_classes: int = 2,
+        num_classes: int = 1,
         feature_extractor: FeatureExtractor | None = None,
         beats_checkpoint_path: str | None = None,
         head_hidden_dim: int = 256,

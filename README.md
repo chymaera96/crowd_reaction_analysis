@@ -1,7 +1,7 @@
 # crowd_reaction_analysis
 Base repository for analysis of crowd reactions in political speeches.
 
-This repo includes a PyTorch training package for weakly supervised sound event detection on 20 second speech chunks, using a frozen BEATs encoder and a multi-instance learning head for two independent crowd-reaction labels.
+This repo includes a PyTorch training package for weakly supervised sound event detection on 20 second speech chunks, using a frozen BEATs encoder and a multi-instance learning head for a single binary `crowd` label.
 
 ## Setup
 
@@ -34,14 +34,17 @@ Known filename inconsistencies in `data/strong_labelling`:
 - The Jonas Brothers strong-label entry is also missing its matching audio file in `data/strong_labelling/`, so the `.txt` and `.wav` assets are currently inconsistent.
 
 Internal metadata:
-- weak records: `audio_path`, `speech_id`, `chunk_start_sec`, `chunk_end_sec`, `label_0`, `label_1`, `split`
+- weak records: `audio_path`, `speech_id`, `chunk_start_sec`, `chunk_end_sec`, `label_0`, `split`
 - strong events: `speech_id`, `event_class`, `onset_sec`, `offset_sec`
 
 Weak targets:
-- target `0`: any disapproval (`clear_disapproval` or `unclear_disapproval`)
-- target `1`: any approval (`clear_approval` or `unclear_approval`)
+- target `0`: `crowd`
+- weak positives are any of `clear_disapproval`, `unclear_disapproval`, `unclear_approval`, `clear_approval`, or `crowd_chorus`
+- weak negatives are `no_crowd`
+- `hard_annotation` is ignored for target construction
 
 Strong validation uses `sed_eval`:
+- all strong crowd-like labels collapse to a single positive `crowd` event class
 - segment-based metrics at the configured `instance_sec`
 - event-based metrics with configurable onset collar and offset ratio
 
@@ -52,5 +55,5 @@ Checkpoint outputs:
 
 Inference plots:
 - `scripts/infer.py` runs the trained model over the strong-labeled validation files
-- it saves one PNG per file with a spectrogram background, ground-truth spans, and continuous per-class prediction score curves
+- it saves one PNG per file with a spectrogram background, raw ground-truth strong spans, and a continuous binary `crowd` prediction score curve
 - if W&B is enabled or `--wandb-mode` / `--run-id` are passed, the saved images are also logged to W&B

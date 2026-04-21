@@ -21,32 +21,24 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, normalize_name, speech_durations_from_records
-from crowd_reaction.eval import aggregate_chunk_predictions, collect_strong_predictions, contiguous_regions, strong_events_to_bin_targets
+from crowd_reaction.eval import aggregate_chunk_predictions, collect_strong_predictions, contiguous_regions
 from crowd_reaction.model import CrowdReactionModel
 
 
 CLASS_NAMES = {
-    0: "disapproval",
-    1: "approval",
-}
-GROUND_TRUTH_COLORS = {
-    0: "#d62728",
-    1: "#2ca02c",
+    0: "crowd",
 }
 PREDICTION_COLORS = {
     0: "#ff9896",
-    1: "#98df8a",
 }
 SCORE_LINE_COLORS = {
     0: "#ff4d4d",
-    1: "#32cd32",
 }
 GROUND_TRUTH_LABEL_COLORS = {
     "clear_disapproval": "#d62728",
     "unclear_disapproval": "#ff7f0e",
     "unclear_approval": "#17becf",
     "clear_approval": "#2ca02c",
-    "no_crowd": "#7f7f7f",
     "crowd_chorus": "#9467bd",
 }
 GROUND_TRUTH_LABEL_ORDER = [
@@ -54,7 +46,6 @@ GROUND_TRUTH_LABEL_ORDER = [
     "unclear_disapproval",
     "unclear_approval",
     "clear_approval",
-    "no_crowd",
     "crowd_chorus",
 ]
 
@@ -222,7 +213,7 @@ def draw_intervals(
             ymin=y_min,
             ymax=y_max,
             color=color,
-            alpha=0.75,
+            alpha=0.9,
             linewidth=0,
             label=label if not label_used else None,
         )
@@ -302,7 +293,7 @@ def plot_speech(
         aspect="auto",
         extent=extent,
         cmap="magma",
-        alpha=0.35,
+        alpha=0.55,
     )
     fig.colorbar(image, ax=ax, format="%+2.0f dB")
 

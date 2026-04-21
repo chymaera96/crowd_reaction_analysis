@@ -275,9 +275,9 @@ def evaluate_strong(
 
     return {
         "segment_per_class": per_class_segment,
-        "segment_macro_precision": float(np.mean([item["precision"] for item in per_class_segment])) if per_class_segment else 0.0,
-        "segment_macro_recall": float(np.mean([item["recall"] for item in per_class_segment])) if per_class_segment else 0.0,
-        "segment_macro_f1": float(np.mean([item["f1"] for item in per_class_segment])) if per_class_segment else 0.0,
+        "segment_macro_precision": float(np.nanmean([item["precision"] for item in per_class_segment])) if per_class_segment else 0.0,
+        "segment_macro_recall": float(np.nanmean([item["recall"] for item in per_class_segment])) if per_class_segment else 0.0,
+        "segment_macro_f1": float(np.nanmean([item["f1"] for item in per_class_segment])) if per_class_segment else 0.0,
         "event_per_class": per_class_event,
         "event_precision": float(event_overall["f_measure"]["precision"]),
         "event_recall": float(event_overall["f_measure"]["recall"]),

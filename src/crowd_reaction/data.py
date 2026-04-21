@@ -11,8 +11,14 @@ import torch
 import torchaudio
 
 
-DISAPPROVAL_LABELS = {"clear_disapproval", "unclear_disapproval"}
-APPROVAL_LABELS = {"clear_approval", "unclear_approval"}
+POSITIVE_CROWD_LABELS = {
+    "clear_disapproval",
+    "unclear_disapproval",
+    "unclear_approval",
+    "clear_approval",
+    "crowd_chorus",
+}
+NEGATIVE_CROWD_LABEL = "no_crowd"
 STRONG_TEXT_GLOB = "noise_*.txt"
 SEGMENT_SUFFIX_PATTERN = re.compile(r"_seg\d+$", flags=re.IGNORECASE)
 
@@ -82,18 +88,26 @@ def normalize_name(value: str) -> str:
     return normalized
 
 
-def weak_row_to_labels(row: pd.Series) -> tuple[float, float]:
-    disapproval = float(any(int(row.get(column, 0) or 0) > 0 for column in DISAPPROVAL_LABELS))
-    approval = float(any(int(row.get(column, 0) or 0) > 0 for column in APPROVAL_LABELS))
-    return (disapproval, approval)
+def _row_flag(row: pd.Series, column: str) -> int:
+    value = row.get(column, 0)
+    if pd.isna(value):
+        return 0
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0
+    return int(float(value))
+
+
+def weak_row_to_labels(row: pd.Series) -> tuple[float]:
+    crowd = float(any(_row_flag(row, column) > 0 for column in POSITIVE_CROWD_LABELS))
+    return (crowd,)
 
 
 def strong_label_to_class(label: str) -> int | None:
     label = str(label).strip()
-    if label in DISAPPROVAL_LABELS:
+    if label in POSITIVE_CROWD_LABELS:
         return 0
-    if label in APPROVAL_LABELS:
-        return 1
     return None
 
 
@@ -252,10 +266,12 @@ def build_split_records(
         "source_file",
         "start_sec",
         "end_sec",
+        "no_crowd",
         "clear_disapproval",
         "unclear_disapproval",
         "unclear_approval",
         "clear_approval",
+        "crowd_chorus",
     }
     missing = sorted(required_weak_columns - set(weak_df.columns))
     if missing:
@@ -318,7 +334,7 @@ class WeakChunkDataset(torch.utils.data.Dataset):
         sample_rate: int = 16000,
         chunk_sec: float = 20.0,
         instance_sec: float = 1.0,
-        num_classes: int = 2,
+        num_classes: int = 1,
     ) -> None:
         self.sample_rate = int(sample_rate)
         self.chunk_sec = float(chunk_sec)

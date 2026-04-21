@@ -89,7 +89,7 @@ def test_normalize_name_reconciles_unicode_and_noise_prefix() -> None:
     )
 
 
-def test_weak_row_to_labels_collapses_to_two_targets() -> None:
+def test_weak_row_to_labels_collapses_to_binary_crowd_target() -> None:
     row = pd.Series(
         {
             "clear_disapproval": 0,
@@ -101,7 +101,7 @@ def test_weak_row_to_labels_collapses_to_two_targets() -> None:
             "crowd_chorus": 1,
         }
     )
-    assert weak_row_to_labels(row) == (1.0, 1.0)
+    assert weak_row_to_labels(row) == (1.0,)
 
 
 def test_parse_strong_label_file_ignores_non_target_labels(tmp_path: Path) -> None:
@@ -110,8 +110,24 @@ def test_parse_strong_label_file_ignores_non_target_labels(tmp_path: Path) -> No
     events = parse_strong_label_file(str(txt_path), speech_id="speech-1")
     assert [(event.event_class, event.onset_sec, event.offset_sec) for event in events] == [
         (0, 0.0, 1.0),
-        (1, 2.0, 3.0),
+        (0, 1.0, 2.0),
+        (0, 2.0, 3.0),
     ]
+
+
+def test_weak_row_to_labels_no_crowd_is_negative() -> None:
+    row = pd.Series(
+        {
+            "clear_disapproval": 0,
+            "unclear_disapproval": 0,
+            "unclear_approval": 0,
+            "clear_approval": 0,
+            "hard_annotation": 1,
+            "no_crowd": 1,
+            "crowd_chorus": 0,
+        }
+    )
+    assert weak_row_to_labels(row) == (0.0,)
 
 
 def test_slice_waveform_pads_to_chunk_length() -> None:
@@ -154,13 +170,13 @@ def test_build_split_records_loads_audio_from_original_audio_dir(tmp_path: Path)
         strong_labels_dir=str(strong_dir),
         original_audio_dir=str(audio_dir),
     )
-    dataset = WeakChunkDataset(split_data.val_records, sample_rate=16000, chunk_sec=20.0, instance_sec=1.0, num_classes=2)
+    dataset = WeakChunkDataset(split_data.val_records, sample_rate=16000, chunk_sec=20.0, instance_sec=1.0, num_classes=1)
     item = dataset[0]
 
     assert Path(split_data.val_records[0].audio_path).parent == audio_dir
     assert item["waveform"].shape == (16000 * 20,)
     assert item["instances"].shape == (20, 16000)
-    assert torch.equal(item["labels"], torch.tensor([1.0, 0.0]))
+    assert torch.equal(item["labels"], torch.tensor([1.0]))
     assert float(item["waveform"][-1].item()) > 0.0
 
 

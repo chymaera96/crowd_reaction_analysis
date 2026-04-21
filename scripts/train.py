@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import random
 import sys
@@ -180,7 +181,9 @@ def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, 
 def best_validation_score(metrics: dict[str, Any]) -> float:
     strong = metrics.get("strong")
     if strong is not None:
-        return float(strong["segment_macro_f1"])
+        score = float(strong["segment_macro_f1"])
+        if math.isfinite(score):
+            return score
     return float(metrics["weak"]["macro_average_precision"])
 
 
