@@ -9,10 +9,10 @@ wandb:
   mode: online
 
 data:
-  audios_info_csv: gpfs/scratch/acw723/data/audios_info.csv
-  weak_labels_csv: gpfs/scratch/acw723/data/weak_labelling/_weak_labels.csv
-  strong_labels_dir: gpfs/scratch/acw723/data/strong_labelling
-  original_audio_dir: gpfs/scratch/acw723/data/original_audio_files
+  audios_info_csv: /gpfs/scratch/acw723/data/audios_info.csv
+  weak_labels_csv: /gpfs/scratch/acw723/data/weak_labelling/_weak_labels.csv
+  strong_labels_dir: /gpfs/scratch/acw723/data/strong_labelling
+  original_audio_dir: /gpfs/scratch/acw723/data/original_audio_files
   sample_rate: 16000
   chunk_sec: 20.0
   instance_sec: 1.0
