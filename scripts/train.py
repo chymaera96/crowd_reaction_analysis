@@ -28,6 +28,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train crowd reaction SED with frozen BEATs and MMM MIL loss")
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and metrics")
+    parser.add_argument("--run-id", default=None, help="Run identifier used for W&B and checkpoint subdirectory naming")
+    parser.add_argument(
+        "--wandb-mode",
+        default=None,
+        choices=("online", "offline", "disabled"),
+        help="Override W&B mode for this run",
+    )
     return parser.parse_args()
 
 
@@ -142,13 +149,15 @@ def flatten_metrics(metrics: dict[str, Any], prefix: str = "") -> dict[str, floa
     return flattened
 
 
-def init_wandb(config: dict[str, Any], output_dir: Path):
+def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, wandb_mode: str | None):
     wandb_config = config.get("wandb", {})
-    if not bool(wandb_config.get("enabled", False)):
+    enabled = bool(wandb_config.get("enabled", False)) or (wandb_mode is not None and wandb_mode != "disabled") or (run_id is not None)
+    if not enabled:
         return None
 
-    if wandb_config.get("mode"):
-        os.environ["WANDB_MODE"] = str(wandb_config["mode"])
+    resolved_mode = wandb_mode if wandb_mode is not None else wandb_config.get("mode")
+    if resolved_mode:
+        os.environ["WANDB_MODE"] = str(resolved_mode)
     if wandb_config.get("project"):
         os.environ.setdefault("WANDB_PROJECT", str(wandb_config["project"]))
     if wandb_config.get("entity"):
@@ -158,7 +167,8 @@ def init_wandb(config: dict[str, Any], output_dir: Path):
     run = wandb.init(
         project=wandb_config.get("project"),
         entity=wandb_config.get("entity"),
-        name=wandb_config.get("run_name"),
+        id=run_id,
+        name=run_id if run_id is not None else wandb_config.get("run_name"),
         tags=wandb_config.get("tags"),
         notes=wandb_config.get("notes"),
         dir=str(output_dir),
@@ -167,15 +177,24 @@ def init_wandb(config: dict[str, Any], output_dir: Path):
     return run
 
 
+def best_validation_score(metrics: dict[str, Any]) -> float:
+    strong = metrics.get("strong")
+    if strong is not None:
+        return float(strong["segment_macro_f1"])
+    return float(metrics["weak"]["macro_average_precision"])
+
+
 def main() -> None:
     args = parse_args()
     config = load_config(args.config)
     output_dir = Path(args.output_dir)
+    if args.run_id:
+        output_dir = output_dir / args.run_id
     output_dir.mkdir(parents=True, exist_ok=True)
 
     set_seed(int(config.get("seed", 0)))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    wandb_run = init_wandb(config, output_dir)
+    wandb_run = init_wandb(config, output_dir, run_id=args.run_id, wandb_mode=args.wandb_mode)
 
     split_datasets = build_split_records(
         audios_info_csv=config["data"]["audios_info_csv"],
@@ -208,8 +227,7 @@ def main() -> None:
     if class_weights is not None:
         class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
 
-    best_weak = float("-inf")
-    best_strong = float("-inf")
+    best_val_score = float("-inf")
     history = []
 
     for epoch in range(1, int(config["trainer"]["epochs"]) + 1):
@@ -254,36 +272,25 @@ def main() -> None:
             config=config,
         )
 
-        weak_score = float(metrics["weak"]["macro_average_precision"])
-        if weak_score >= best_weak:
-            best_weak = weak_score
+        current_val_score = best_validation_score(metrics)
+        if current_val_score >= best_val_score:
+            best_val_score = current_val_score
             save_checkpoint(
-                output_dir / "best_weak.pt",
+                output_dir / "best_val.pt",
                 model=model,
                 optimizer=optimizer,
                 epoch=epoch,
                 metrics=metrics,
                 config=config,
             )
-
         strong = metrics.get("strong")
-        strong_score = float(strong["segment_macro_f1"]) if strong is not None else float("-inf")
-        if strong_score >= best_strong:
-            best_strong = strong_score
-            save_checkpoint(
-                output_dir / "best_strong.pt",
-                model=model,
-                optimizer=optimizer,
-                epoch=epoch,
-                metrics=metrics,
-                config=config,
-            )
 
         print(
             json.dumps(
                 {
                     "epoch": epoch,
                     "train_loss": metrics["train_loss"],
+                    "val_score": current_val_score,
                     "weak_macro_auroc": metrics["weak"]["macro_auroc"],
                     "weak_macro_ap": metrics["weak"]["macro_average_precision"],
                     "weak_macro_f1": metrics["weak"]["macro_f1"],
@@ -299,11 +306,9 @@ def main() -> None:
         json.dump(history, handle, indent=2)
 
     if wandb_run is not None:
-        wandb_run.summary["best_weak_macro_average_precision"] = best_weak
-        if best_strong != float("-inf"):
-            wandb_run.summary["best_strong_segment_macro_f1"] = best_strong
+        wandb_run.summary["best_validation_score"] = best_val_score
         wandb_run.save(str(output_dir / "history.json"), policy="now")
-        for checkpoint_name in ("last.pt", "best_weak.pt", "best_strong.pt"):
+        for checkpoint_name in ("last.pt", "best_val.pt"):
             checkpoint_path = output_dir / checkpoint_name
             if checkpoint_path.exists():
                 wandb_run.save(str(checkpoint_path), policy="now")

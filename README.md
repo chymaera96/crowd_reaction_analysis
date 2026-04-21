@@ -12,11 +12,11 @@ Conda setup:
 
 If you want Weights & Biases logging:
 - `wandb login`
-- set `wandb.enabled: true` in the config
-- optionally set `wandb.mode: offline` for local-only experiment tracking
+- pass `--wandb-mode online` or `--wandb-mode offline`
+- pass `--run-id your_run_name` to name both the W&B run and the checkpoint subdirectory
 
 Main entrypoints:
-- `scripts/train.py --config configs/default.yaml --output-dir /path/to/output`
+- `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs + temporal classifier head
 - `src/crowd_reaction/eval.py` for weak metrics plus `sed_eval`-based segment and event validation
@@ -38,3 +38,8 @@ Weak targets:
 Strong validation uses `sed_eval`:
 - segment-based metrics at the configured `instance_sec`
 - event-based metrics with configurable onset collar and offset ratio
+
+Checkpoint outputs:
+- `last.pt` for the final epoch
+- `best_val.pt` for the best validation epoch
+- both are saved under `<output-dir>/<run-id>/` when `--run-id` is provided

@@ -4,23 +4,22 @@ wandb:
   enabled: false
   project: crowd-reaction-analysis
   entity: null
-  run_name: null
   tags: []
   notes: null
   mode: online
 
 data:
-  audios_info_csv: data/audios_info.csv
-  weak_labels_csv: data/weak_labelling/_weak_labels.csv
-  strong_labels_dir: data/strong_labelling
-  original_audio_dir: data/original_audio_files
+  audios_info_csv: gpfs/scratch/acw723/data/audios_info.csv
+  weak_labels_csv: gpfs/scratch/acw723/data/weak_labelling/_weak_labels.csv
+  strong_labels_dir: gpfs/scratch/acw723/data/strong_labelling
+  original_audio_dir: gpfs/scratch/acw723/data/original_audio_files
   sample_rate: 16000
   chunk_sec: 20.0
   instance_sec: 1.0
   num_classes: 2
 
 model:
-  beats_checkpoint_path: /absolute/path/to/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
+  beats_checkpoint_path: /data/home/acw723/crowd_reaction_analysisx/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
   num_classes: 2
   head_hidden_dim: 256
   head_dropout: 0.1
