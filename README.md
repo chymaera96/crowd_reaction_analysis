@@ -17,6 +17,7 @@ If you want Weights & Biases logging:
 
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
+- `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_val.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs + temporal classifier head
 - `src/crowd_reaction/eval.py` for weak metrics plus `sed_eval`-based segment and event validation
@@ -48,3 +49,8 @@ Checkpoint outputs:
 - `last.pt` for the final epoch
 - `best_val.pt` for the best validation epoch
 - both are saved under `<output-dir>/<run-id>/` when `--run-id` is provided
+
+Inference plots:
+- `scripts/infer.py` runs the trained model over the strong-labeled validation files
+- it saves one PNG per file with a spectrogram background, ground-truth spans, and continuous per-class prediction score curves
+- if W&B is enabled or `--wandb-mode` / `--run-id` are passed, the saved images are also logged to W&B
