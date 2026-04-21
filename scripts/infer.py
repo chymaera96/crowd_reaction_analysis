@@ -222,7 +222,7 @@ def draw_intervals(
             ymin=y_min,
             ymax=y_max,
             color=color,
-            alpha=0.35,
+            alpha=0.75,
             linewidth=0,
             label=label if not label_used else None,
         )
@@ -302,7 +302,7 @@ def plot_speech(
         aspect="auto",
         extent=extent,
         cmap="magma",
-        alpha=0.55,
+        alpha=0.35,
     )
     fig.colorbar(image, ax=ax, format="%+2.0f dB")
 
