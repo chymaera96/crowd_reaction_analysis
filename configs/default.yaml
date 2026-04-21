@@ -19,7 +19,7 @@ data:
   num_classes: 2
 
 model:
-  beats_checkpoint_path: /data/home/acw723/crowd_reaction_analysisx/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
+  beats_checkpoint_path: /data/home/acw723/crowd_reaction_analysis/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
   num_classes: 2
   head_hidden_dim: 256
   head_dropout: 0.1
