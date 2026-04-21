@@ -120,6 +120,12 @@ def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, 
     )
 
 
+def get_wandb_module_if_needed(wandb_run):
+    if wandb_run is None:
+        return None
+    return _import_wandb()
+
+
 def sanitize_stem(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name).strip("_")
 
@@ -301,6 +307,7 @@ def main() -> None:
     threshold = float(args.threshold) if args.threshold is not None else float(config["val"].get("threshold", 0.5))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     wandb_run = init_wandb(config, output_dir, run_id=args.run_id, wandb_mode=args.wandb_mode)
+    wandb_module = get_wandb_module_if_needed(wandb_run)
 
     split_data = build_split_records(
         audios_info_csv=config["data"]["audios_info_csv"],
@@ -365,8 +372,8 @@ def main() -> None:
             output_path=output_path,
         )
         print(f"Saved {output_path}")
-        if wandb_run is not None:
-            wandb_run.log({f"inference/{speech_id}": wandb_run.Image(str(output_path))})
+        if wandb_run is not None and wandb_module is not None:
+            wandb_run.log({f"inference/{speech_id}": wandb_module.Image(str(output_path))})
 
     if wandb_run is not None:
         wandb_run.finish()
