@@ -20,7 +20,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
+from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, normalize_name, speech_durations_from_records
 from crowd_reaction.eval import aggregate_chunk_predictions, collect_strong_predictions, contiguous_regions, strong_events_to_bin_targets
 from crowd_reaction.model import CrowdReactionModel
 
@@ -41,6 +41,22 @@ SCORE_LINE_COLORS = {
     0: "#ff4d4d",
     1: "#32cd32",
 }
+GROUND_TRUTH_LABEL_COLORS = {
+    "clear_disapproval": "#d62728",
+    "unclear_disapproval": "#ff7f0e",
+    "unclear_approval": "#17becf",
+    "clear_approval": "#2ca02c",
+    "no_crowd": "#7f7f7f",
+    "crowd_chorus": "#9467bd",
+}
+GROUND_TRUTH_LABEL_ORDER = [
+    "clear_disapproval",
+    "unclear_disapproval",
+    "unclear_approval",
+    "clear_approval",
+    "no_crowd",
+    "crowd_chorus",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -167,6 +183,28 @@ def compute_spectrogram(waveform: torch.Tensor, sample_rate: int) -> tuple[np.nd
     return db.numpy(), times, freqs
 
 
+def build_strong_text_index(strong_labels_dir: str) -> dict[str, Path]:
+    return {
+        normalize_name(path.name): path.resolve()
+        for path in sorted(Path(strong_labels_dir).glob("noise_*.txt"))
+    }
+
+
+def parse_raw_strong_annotations(strong_txt_path: str) -> dict[str, list[tuple[float, float]]]:
+    annotations: dict[str, list[tuple[float, float]]] = {}
+    with open(strong_txt_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            onset_sec, offset_sec, label = stripped.split("\t")
+            label = label.strip()
+            if label == "hard_annotation":
+                continue
+            annotations.setdefault(label, []).append((float(onset_sec), float(offset_sec)))
+    return annotations
+
+
 def draw_intervals(
     ax: plt.Axes,
     intervals: list[tuple[float, float]],
@@ -195,37 +233,45 @@ def overlay_events(
     ax: plt.Axes,
     *,
     predicted_bins: np.ndarray,
-    target_bins: np.ndarray,
+    ground_truth_annotations: dict[str, list[tuple[float, float]]],
     instance_sec: float,
 ) -> None:
     band_height = 0.06
     gap = 0.01
     base = 0.99
-    for class_index in range(target_bins.shape[1]):
-        top = base - class_index * 2 * (band_height + gap)
+    num_gt_bands = len([label for label in GROUND_TRUTH_LABEL_ORDER if label in ground_truth_annotations])
+    total_bands = num_gt_bands + predicted_bins.shape[1]
+
+    current_band = 0
+    for label in GROUND_TRUTH_LABEL_ORDER:
+        gt_intervals = ground_truth_annotations.get(label)
+        if not gt_intervals:
+            continue
+        top = base - current_band * (band_height + gap)
         gt_bottom = max(0.0, top - band_height)
-        pred_top = max(0.0, gt_bottom - gap)
-        pred_bottom = max(0.0, pred_top - band_height)
-
-        gt_intervals = contiguous_regions(target_bins[:, class_index].astype(np.int64), instance_sec=instance_sec)
-        pred_intervals = contiguous_regions(predicted_bins[:, class_index].astype(np.int64), instance_sec=instance_sec)
-
         draw_intervals(
             ax,
             gt_intervals,
             y_min=gt_bottom,
             y_max=top,
-            color=GROUND_TRUTH_COLORS[class_index],
-            label=f"GT {CLASS_NAMES[class_index]}",
+            color=GROUND_TRUTH_LABEL_COLORS.get(label, "#1f77b4"),
+            label=f"GT {label}",
         )
+        current_band += 1
+
+    for class_index in range(predicted_bins.shape[1]):
+        top = base - current_band * (band_height + gap)
+        pred_bottom = max(0.0, top - band_height)
+        pred_intervals = contiguous_regions(predicted_bins[:, class_index].astype(np.int64), instance_sec=instance_sec)
         draw_intervals(
             ax,
             pred_intervals,
             y_min=pred_bottom,
-            y_max=pred_top,
+            y_max=top,
             color=PREDICTION_COLORS[class_index],
             label=f"Pred {CLASS_NAMES[class_index]}",
         )
+        current_band += 1
 
 
 def plot_speech(
@@ -233,7 +279,7 @@ def plot_speech(
     audio_path: str,
     speech_id: str,
     predicted_probs: np.ndarray,
-    target_bins: np.ndarray,
+    ground_truth_annotations: dict[str, list[tuple[float, float]]],
     sample_rate: int,
     instance_sec: float,
     threshold: float,
@@ -256,6 +302,7 @@ def plot_speech(
         aspect="auto",
         extent=extent,
         cmap="magma",
+        alpha=0.55,
     )
     fig.colorbar(image, ax=ax, format="%+2.0f dB")
 
@@ -263,7 +310,7 @@ def plot_speech(
     overlay_events(
         ax,
         predicted_bins=predicted_binary,
-        target_bins=target_bins,
+        ground_truth_annotations=ground_truth_annotations,
         instance_sec=instance_sec,
     )
 
@@ -315,6 +362,7 @@ def main() -> None:
         strong_labels_dir=config["data"]["strong_labels_dir"],
         original_audio_dir=config["data"]["original_audio_dir"],
     )
+    strong_text_index = build_strong_text_index(config["data"]["strong_labels_dir"])
     val_loader = build_val_loader(config, split_data.val_records)
     model = load_model(config, args.checkpoint, device)
 
@@ -334,12 +382,6 @@ def main() -> None:
         instance_sec=float(config["data"]["instance_sec"]),
         speech_durations=speech_durations,
     )
-    target_bins = strong_events_to_bin_targets(
-        split_data.strong_events,
-        num_classes=int(config["model"]["num_classes"]),
-        instance_sec=float(config["data"]["instance_sec"]),
-        speech_durations=speech_durations,
-    )
 
     for speech_id in sorted(aggregated_probs):
         if speech_id not in record_by_speech:
@@ -350,22 +392,19 @@ def main() -> None:
         num_bins = max(
             int(math.ceil(audio_duration / float(config["data"]["instance_sec"]))),
             aggregated_probs[speech_id].shape[0],
-            target_bins.get(speech_id, np.zeros((0, int(config["model"]["num_classes"])), dtype=np.int64)).shape[0],
         )
 
         pred_pad = np.zeros((num_bins, int(config["model"]["num_classes"])), dtype=np.float32)
         pred_pad[: aggregated_probs[speech_id].shape[0]] = aggregated_probs[speech_id]
-        tgt_existing = target_bins.get(speech_id)
-        tgt_pad = np.zeros((num_bins, int(config["model"]["num_classes"])), dtype=np.int64)
-        if tgt_existing is not None:
-            tgt_pad[: tgt_existing.shape[0]] = tgt_existing
+        strong_txt_path = strong_text_index.get(normalize_name(record.audio_path))
+        ground_truth_annotations = parse_raw_strong_annotations(str(strong_txt_path)) if strong_txt_path is not None else {}
 
         output_path = output_dir / f"{sanitize_stem(speech_id)}.png"
         plot_speech(
             audio_path=record.audio_path,
             speech_id=speech_id,
             predicted_probs=pred_pad,
-            target_bins=tgt_pad,
+            ground_truth_annotations=ground_truth_annotations,
             sample_rate=int(config["data"]["sample_rate"]),
             instance_sec=float(config["data"]["instance_sec"]),
             threshold=threshold,
