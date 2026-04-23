@@ -138,6 +138,13 @@ def sanitize_stem(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name).strip("_")
 
 
+def truncate_plot_title(value: str, limit: int = 10) -> str:
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
 def format_seconds_mmss(value: float, _pos: float | None = None) -> str:
     total_seconds = max(0, int(round(float(value))))
     minutes, seconds = divmod(total_seconds, 60)
@@ -368,7 +375,7 @@ def plot_speech(
     score_ax.set_ylabel("Predicted probability")
     score_ax.grid(False)
 
-    ax.set_title(f"{speech_id} | threshold={threshold:.2f}")
+    ax.set_title(f"{truncate_plot_title(speech_id)} | threshold={threshold:.2f}")
     ax.set_xlabel("Time (mm:ss)")
     ax.set_ylabel("Frequency (Hz)")
     ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
@@ -376,7 +383,7 @@ def plot_speech(
     score_ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
     handles_a, labels_a = ax.get_legend_handles_labels()
     handles_b, labels_b = score_ax.get_legend_handles_labels()
-    ax.legend(handles_a + handles_b, labels_a + labels_b, loc="upper right", ncol=2, fontsize=9)
+    ax.legend(handles_a + handles_b, labels_a + labels_b, loc="lower right", ncol=2, fontsize=9)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(output_path, dpi=120)
@@ -467,6 +474,9 @@ def main() -> None:
         print(f"Saved {ground_truth_annotation_path}")
         if wandb_run is not None and wandb_module is not None:
             wandb_run.log({f"inference/{speech_id}": wandb_module.Image(str(output_path))})
+
+    num_saved_plots = len(list(output_dir.glob("*.png")))
+    print(f"Total plots saved in {output_dir}: {num_saved_plots}")
 
     if wandb_run is not None:
         wandb_run.finish()
