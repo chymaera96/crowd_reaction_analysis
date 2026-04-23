@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, MaxNLocator
 import numpy as np
 import torch
 import torchaudio
@@ -137,6 +138,50 @@ def sanitize_stem(name: str) -> str:
     return "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name).strip("_")
 
 
+def format_seconds_mmss(value: float, _pos: float | None = None) -> str:
+    total_seconds = max(0, int(round(float(value))))
+    minutes, seconds = divmod(total_seconds, 60)
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def regions_from_annotations(annotations: dict[str, list[tuple[float, float]]]) -> list[tuple[float, float, str]]:
+    regions: list[tuple[float, float, str]] = []
+    for label in GROUND_TRUTH_LABEL_ORDER:
+        for onset_sec, offset_sec in annotations.get(label, []):
+            regions.append((float(onset_sec), float(offset_sec), label))
+
+    seen_labels = set(GROUND_TRUTH_LABEL_ORDER)
+    for label in sorted(annotations):
+        if label in seen_labels:
+            continue
+        for onset_sec, offset_sec in annotations[label]:
+            regions.append((float(onset_sec), float(offset_sec), label))
+    return regions
+
+
+def predicted_regions_from_probs(
+    predicted_probs: np.ndarray,
+    *,
+    threshold: float,
+    instance_sec: float,
+) -> list[tuple[float, float, str]]:
+    predicted_binary = (predicted_probs >= threshold).astype(np.int64)
+    regions: list[tuple[float, float, str]] = []
+    for class_index in range(predicted_binary.shape[1]):
+        label = CLASS_NAMES[class_index]
+        for onset_sec, offset_sec in contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
+            regions.append((float(onset_sec), float(offset_sec), label))
+    return regions
+
+
+def write_sonic_visualiser_regions(output_path: Path, regions: list[tuple[float, float, str]]) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        for onset_sec, offset_sec, label in sorted(regions, key=lambda item: (item[0], item[1], item[2])):
+            duration_sec = max(0.0, float(offset_sec) - float(onset_sec))
+            handle.write(f"{float(onset_sec):.6f}\t{duration_sec:.6f}\t{label}\n")
+
+
 def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.device) -> CrowdReactionModel:
     model = CrowdReactionModel(
         num_classes=int(config["model"]["num_classes"]),
@@ -155,9 +200,10 @@ def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.devic
 
 
 def compute_spectrogram(waveform: torch.Tensor, sample_rate: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    n_fft = 1024
-    hop_length = 256
-    win_length = 1024
+    # Bias the spectrogram toward better time detail so short reactions are easier to inspect.
+    n_fft = 512
+    hop_length = 128
+    win_length = 512
     window = torch.hann_window(win_length)
     spectrogram = torch.stft(
         waveform,
@@ -285,7 +331,7 @@ def plot_speech(
         waveform = waveform[0]
 
     spectrogram_db, times, freqs = compute_spectrogram(waveform, sample_rate)
-    fig, ax = plt.subplots(figsize=(16, 7))
+    fig, ax = plt.subplots(figsize=(14, 5))
     extent = [0.0, times[-1] if len(times) else waveform.numel() / sample_rate, 0.0, freqs[-1] if len(freqs) else sample_rate / 2.0]
     image = ax.imshow(
         spectrogram_db,
@@ -313,8 +359,9 @@ def plot_speech(
             centers,
             predicted_probs[:, class_index],
             color=SCORE_LINE_COLORS[class_index],
-            linewidth=2.0,
+            linewidth=1.75,
             alpha=0.95,
+            drawstyle="steps-mid",
             label=f"Score {CLASS_NAMES[class_index]}",
         )
     score_ax.set_ylim(0.0, 1.0)
@@ -322,14 +369,17 @@ def plot_speech(
     score_ax.grid(False)
 
     ax.set_title(f"{speech_id} | threshold={threshold:.2f}")
-    ax.set_xlabel("Time (s)")
+    ax.set_xlabel("Time (mm:ss)")
     ax.set_ylabel("Frequency (Hz)")
+    ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
+    ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
+    score_ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
     handles_a, labels_a = ax.get_legend_handles_labels()
     handles_b, labels_b = score_ax.get_legend_handles_labels()
     ax.legend(handles_a + handles_b, labels_a + labels_b, loc="upper right", ncol=2, fontsize=9)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=200)
+    fig.savefig(output_path, dpi=120)
     plt.close(fig)
 
 
@@ -389,8 +439,17 @@ def main() -> None:
         pred_pad[: aggregated_probs[speech_id].shape[0]] = aggregated_probs[speech_id]
         strong_txt_path = strong_text_index.get(normalize_name(record.audio_path))
         ground_truth_annotations = parse_raw_strong_annotations(str(strong_txt_path)) if strong_txt_path is not None else {}
+        predicted_regions = predicted_regions_from_probs(
+            pred_pad,
+            threshold=threshold,
+            instance_sec=float(config["data"]["instance_sec"]),
+        )
+        ground_truth_regions = regions_from_annotations(ground_truth_annotations)
 
-        output_path = output_dir / f"{sanitize_stem(speech_id)}.png"
+        stem = sanitize_stem(speech_id)
+        output_path = output_dir / f"{stem}.png"
+        predicted_annotation_path = output_dir / f"{stem}.predicted.tsv"
+        ground_truth_annotation_path = output_dir / f"{stem}.ground_truth.tsv"
         plot_speech(
             audio_path=record.audio_path,
             speech_id=speech_id,
@@ -401,7 +460,11 @@ def main() -> None:
             threshold=threshold,
             output_path=output_path,
         )
+        write_sonic_visualiser_regions(predicted_annotation_path, predicted_regions)
+        write_sonic_visualiser_regions(ground_truth_annotation_path, ground_truth_regions)
         print(f"Saved {output_path}")
+        print(f"Saved {predicted_annotation_path}")
+        print(f"Saved {ground_truth_annotation_path}")
         if wandb_run is not None and wandb_module is not None:
             wandb_run.log({f"inference/{speech_id}": wandb_module.Image(str(output_path))})
 

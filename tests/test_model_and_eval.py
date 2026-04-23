@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import importlib.util
+from pathlib import Path
 
 import numpy as np
 import torch
@@ -9,6 +11,13 @@ import pytest
 from crowd_reaction.data import StrongEvent
 from crowd_reaction.eval import SpeechChunkPrediction, evaluate_strong
 from crowd_reaction.model import CrowdReactionModel, DummyFeatureExtractor, mmm_bag_loss
+
+
+_INFER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "infer.py"
+_INFER_SPEC = importlib.util.spec_from_file_location("crowd_reaction_infer", _INFER_PATH)
+assert _INFER_SPEC is not None and _INFER_SPEC.loader is not None
+infer_module = importlib.util.module_from_spec(_INFER_SPEC)
+_INFER_SPEC.loader.exec_module(infer_module)
 
 
 def test_mmm_loss_matches_manual_negative_case() -> None:
@@ -88,3 +97,25 @@ def test_synthetic_one_step_training_smoke() -> None:
     assert logits.shape == (3, 20, 1)
     assert bag_probs.shape == (3, 1)
     assert float(loss.detach().item()) > 0.0
+
+
+def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
+    probs = np.array([[0.2], [0.8], [0.9], [0.4], [0.7]], dtype=np.float32)
+    regions = infer_module.predicted_regions_from_probs(probs, threshold=0.5, instance_sec=1.0)
+
+    assert regions == [
+        (1.0, 3.0, "crowd"),
+        (4.0, 5.0, "crowd"),
+    ]
+
+    output_path = tmp_path / "predicted.tsv"
+    infer_module.write_sonic_visualiser_regions(output_path, regions)
+    assert output_path.read_text(encoding="utf-8") == (
+        "1.000000\t2.000000\tcrowd\n"
+        "4.000000\t1.000000\tcrowd\n"
+    )
+
+
+def test_infer_formats_time_as_mmss() -> None:
+    assert infer_module.format_seconds_mmss(0.0) == "00:00"
+    assert infer_module.format_seconds_mmss(65.1) == "01:05"
