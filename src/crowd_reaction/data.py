@@ -11,16 +11,36 @@ import torch
 import torchaudio
 
 
-POSITIVE_CROWD_LABELS = {
+APPROVAL_LABELS = {
+    "clear_approval",
+    "unclear_approval",
+}
+DISAPPROVAL_LABELS = {
     "clear_disapproval",
     "unclear_disapproval",
-    "unclear_approval",
-    "clear_approval",
-    "crowd_chorus",
 }
+CLEAR_LABELS = {
+    "clear_approval",
+    "clear_disapproval",
+}
+UNCLEAR_LABELS = {
+    "unclear_approval",
+    "unclear_disapproval",
+}
+POSITIVE_EVENT_LABELS = APPROVAL_LABELS | DISAPPROVAL_LABELS | {"crowd_chorus"}
 NEGATIVE_CROWD_LABEL = "no_crowd"
 STRONG_TEXT_GLOB = "noise_*.txt"
 SEGMENT_SUFFIX_PATTERN = re.compile(r"_seg\d+$", flags=re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class WeakBagTargets:
+    event_target: tuple[float, ...]
+    event_mask: float
+    polarity_target: tuple[float, ...]
+    polarity_mask: float
+    clarity_target: tuple[float, ...]
+    clarity_mask: float
 
 
 @dataclass(frozen=True)
@@ -29,7 +49,7 @@ class WeakChunkRecord:
     speech_id: str
     chunk_start_sec: float
     chunk_end_sec: float
-    labels: tuple[float, ...]
+    targets: WeakBagTargets
     split: str
 
 
@@ -99,14 +119,52 @@ def _row_flag(row: pd.Series, column: str) -> int:
     return int(float(value))
 
 
-def weak_row_to_labels(row: pd.Series) -> tuple[float]:
-    crowd = float(any(_row_flag(row, column) > 0 for column in POSITIVE_CROWD_LABELS))
-    return (crowd,)
+def weak_row_to_targets(row: pd.Series) -> WeakBagTargets:
+    approval = any(_row_flag(row, column) > 0 for column in APPROVAL_LABELS)
+    disapproval = any(_row_flag(row, column) > 0 for column in DISAPPROVAL_LABELS)
+    clear = any(_row_flag(row, column) > 0 for column in CLEAR_LABELS)
+    unclear = any(_row_flag(row, column) > 0 for column in UNCLEAR_LABELS)
+    crowd_chorus = _row_flag(row, "crowd_chorus") > 0
+    no_crowd = _row_flag(row, NEGATIVE_CROWD_LABEL) > 0
+
+    event_positive = approval or disapproval or crowd_chorus
+    contradictory_event = event_positive and no_crowd
+    event_mask = 0.0 if contradictory_event or (not event_positive and not no_crowd) else 1.0
+    event_target = (1.0,) if event_positive and not contradictory_event else (0.0,)
+
+    polarity_mask = 1.0 if approval != disapproval and (approval or disapproval) else 0.0
+    if approval and not disapproval:
+        polarity_target = (1.0, 0.0)
+    elif disapproval and not approval:
+        polarity_target = (0.0, 1.0)
+    else:
+        polarity_target = (0.0, 0.0)
+
+    clarity_mask = 1.0 if clear != unclear and (clear or unclear) else 0.0
+    if clear and not unclear:
+        clarity_target = (1.0, 0.0)
+    elif unclear and not clear:
+        clarity_target = (0.0, 1.0)
+    else:
+        clarity_target = (0.0, 0.0)
+
+    return WeakBagTargets(
+        event_target=event_target,
+        event_mask=event_mask,
+        polarity_target=polarity_target,
+        polarity_mask=polarity_mask,
+        clarity_target=clarity_target,
+        clarity_mask=clarity_mask,
+    )
+
+
+def weak_row_to_labels(row: pd.Series) -> tuple[float, ...]:
+    return weak_row_to_targets(row).event_target
 
 
 def strong_label_to_class(label: str) -> int | None:
     label = str(label).strip()
-    if label in POSITIVE_CROWD_LABELS:
+    if label in POSITIVE_EVENT_LABELS:
         return 0
     return None
 
@@ -294,14 +352,14 @@ def build_split_records(
             raise ValueError(f"Weak row source file {source_file} does not match any original audio file")
 
         speech_id = audio_path.stem
-        labels = weak_row_to_labels(pd.Series(row._asdict()))
+        targets = weak_row_to_targets(pd.Series(row._asdict()))
         split = "val" if _infer_validation_key(source_key, audio_info_index=audio_info_index, strong_txt_by_key=strong_txt_by_key) else "train"
         record = WeakChunkRecord(
             audio_path=str(audio_path),
             speech_id=speech_id,
             chunk_start_sec=float(getattr(row, "start_sec")),
             chunk_end_sec=float(getattr(row, "end_sec")),
-            labels=labels,
+            targets=targets,
             split=split,
         )
         if split == "val":
@@ -315,7 +373,7 @@ def build_split_records(
         strong_txt_path = strong_txt_by_key.get(source_key)
         if strong_txt_path is None:
             raise ValueError(f"Validation file {audio_path.name} is marked strong-labeled but has no matching TXT file")
-        strong_events.extend(parse_strong_label_file(strong_txt_path=str(strong_txt_path), speech_id=audio_path.stem))
+        strong_events.extend(parse_strong_label_file(str(strong_txt_path), speech_id=audio_path.stem))
 
     for source_key, is_strong in audio_info_index.items():
         if not is_strong:
@@ -365,10 +423,19 @@ class WeakChunkDataset(torch.utils.data.Dataset):
             instance_sec=self.instance_sec,
             chunk_sec=self.chunk_sec,
         )
+        targets = {
+            "event_target": torch.tensor(record.targets.event_target, dtype=torch.float32),
+            "event_mask": torch.tensor(record.targets.event_mask, dtype=torch.float32),
+            "polarity_target": torch.tensor(record.targets.polarity_target, dtype=torch.float32),
+            "polarity_mask": torch.tensor(record.targets.polarity_mask, dtype=torch.float32),
+            "clarity_target": torch.tensor(record.targets.clarity_target, dtype=torch.float32),
+            "clarity_mask": torch.tensor(record.targets.clarity_mask, dtype=torch.float32),
+        }
         return {
             "waveform": chunk,
             "instances": instances,
-            "labels": torch.tensor(record.labels, dtype=torch.float32),
+            "targets": targets,
+            "labels": targets["event_target"],
             "speech_id": record.speech_id,
             "audio_path": record.audio_path,
             "chunk_start_sec": torch.tensor(record.chunk_start_sec, dtype=torch.float32),
@@ -381,6 +448,14 @@ def collate_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "waveform": torch.stack([item["waveform"] for item in batch], dim=0),
         "instances": torch.stack([item["instances"] for item in batch], dim=0),
+        "targets": {
+            "event_target": torch.stack([item["targets"]["event_target"] for item in batch], dim=0),
+            "event_mask": torch.stack([item["targets"]["event_mask"] for item in batch], dim=0),
+            "polarity_target": torch.stack([item["targets"]["polarity_target"] for item in batch], dim=0),
+            "polarity_mask": torch.stack([item["targets"]["polarity_mask"] for item in batch], dim=0),
+            "clarity_target": torch.stack([item["targets"]["clarity_target"] for item in batch], dim=0),
+            "clarity_mask": torch.stack([item["targets"]["clarity_mask"] for item in batch], dim=0),
+        },
         "labels": torch.stack([item["labels"] for item in batch], dim=0),
         "speech_id": [item["speech_id"] for item in batch],
         "audio_path": [item["audio_path"] for item in batch],

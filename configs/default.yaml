@@ -16,20 +16,30 @@ data:
   sample_rate: 16000
   chunk_sec: 20.0
   instance_sec: 1.0
-  num_classes: 1
 
 model:
   beats_checkpoint_path: /data/home/acw723/crowd_reaction_analysis/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
-  num_classes: 1
   head_hidden_dim: 256
   head_dropout: 0.1
+
+tasks:
+  event:
+    enabled: true
+  polarity:
+    enabled: true
+  clarity:
+    enabled: true
 
 optimizer:
   lr: 1.0e-4
   weight_decay: 1.0e-4
 
 loss:
-  class_weights: [1.0]
+  event_class_weights: [1.0]
+  polarity_class_weights: [1.0, 1.0]
+  clarity_class_weights: [1.0, 1.0]
+  lambda_polarity: 0.5
+  lambda_clarity: 0.5
 
 trainer:
   epochs: 25

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import math
 import os
 import sys
@@ -22,18 +23,31 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, normalize_name, speech_durations_from_records
-from crowd_reaction.eval import aggregate_chunk_predictions, collect_strong_predictions, contiguous_regions
+from crowd_reaction.eval import SpeechChunkPrediction, aggregate_chunk_predictions, contiguous_regions
 from crowd_reaction.model import CrowdReactionModel
 
 
-CLASS_NAMES = {
-    0: "crowd",
+PLOTTED_LABEL_ORDER = [
+    "relevant_event",
+    "approval",
+    "disapproval",
+    "clear",
+    "unclear",
+]
+TASK_EXPORT_SPECS = {
+    "event": ["relevant_event"],
+    "polarity": ["approval", "disapproval"],
+    "clarity": ["clear", "unclear"],
 }
 PREDICTION_COLORS = {
-    0: "#ff9896",
+    "relevant_event": "#ff9896",
 }
 SCORE_LINE_COLORS = {
-    0: "#ff4d4d",
+    "relevant_event": "#ff4d4d",
+    "approval": "#2ca02c",
+    "disapproval": "#d62728",
+    "clear": "#1f77b4",
+    "unclear": "#ff7f0e",
 }
 GROUND_TRUTH_LABEL_COLORS = {
     "clear_disapproval": "#d62728",
@@ -82,7 +96,6 @@ def build_val_loader(config: dict[str, Any], records) -> DataLoader:
         sample_rate=int(config["data"]["sample_rate"]),
         chunk_sec=float(config["data"]["chunk_sec"]),
         instance_sec=float(config["data"]["instance_sec"]),
-        num_classes=int(config["data"]["num_classes"]),
     )
     return DataLoader(
         dataset,
@@ -169,13 +182,15 @@ def regions_from_annotations(annotations: dict[str, list[tuple[float, float]]]) 
 def predicted_regions_from_probs(
     predicted_probs: np.ndarray,
     *,
+    label_names: list[str],
     threshold: float,
     instance_sec: float,
 ) -> list[tuple[float, float, str]]:
+    if predicted_probs.shape[1] != len(label_names):
+        raise ValueError("predicted_probs second dimension must match label_names")
     predicted_binary = (predicted_probs >= threshold).astype(np.int64)
     regions: list[tuple[float, float, str]] = []
-    for class_index in range(predicted_binary.shape[1]):
-        label = CLASS_NAMES[class_index]
+    for class_index, label in enumerate(label_names):
         for onset_sec, offset_sec in contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
             regions.append((float(onset_sec), float(offset_sec), label))
     return regions
@@ -183,21 +198,89 @@ def predicted_regions_from_probs(
 
 def write_sonic_visualiser_regions(output_path: Path, regions: list[tuple[float, float, str]]) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8") as handle:
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
         for onset_sec, offset_sec, label in sorted(regions, key=lambda item: (item[0], item[1], item[2])):
             duration_sec = max(0.0, float(offset_sec) - float(onset_sec))
-            handle.write(f"{float(onset_sec):.6f}\t{duration_sec:.6f}\t{label}\n")
+            writer.writerow([f"{float(onset_sec):.6f}", f"{duration_sec:.6f}", label])
+
+
+def collect_multitask_chunk_predictions(
+    model: CrowdReactionModel,
+    dataloader: DataLoader,
+    *,
+    device: torch.device,
+) -> dict[str, list[SpeechChunkPrediction]]:
+    predictions_by_task = {task_name: [] for task_name in TASK_EXPORT_SPECS}
+    with torch.no_grad():
+        for batch in dataloader:
+            instances = batch["instances"].to(device)
+            outputs = model(instances=instances)
+            for task_name, label_names in TASK_EXPORT_SPECS.items():
+                if task_name not in outputs.instance_logits:
+                    continue
+                task_instance_probs = torch.sigmoid(outputs.instance_logits[task_name]).cpu().numpy()
+                for batch_index in range(instances.shape[0]):
+                    predictions_by_task[task_name].append(
+                        SpeechChunkPrediction(
+                            speech_id=batch["speech_id"][batch_index],
+                            chunk_start_sec=float(batch["chunk_start_sec"][batch_index].item()),
+                            chunk_end_sec=float(batch["chunk_end_sec"][batch_index].item()),
+                            instance_probs=task_instance_probs[batch_index, :, : len(label_names)],
+                        )
+                    )
+    return predictions_by_task
+
+
+def aggregate_multitask_probs(
+    chunk_predictions_by_task: dict[str, list[SpeechChunkPrediction]],
+    *,
+    instance_sec: float,
+    speech_durations: dict[str, float],
+) -> dict[str, np.ndarray]:
+    aggregated_by_task: dict[str, dict[str, np.ndarray]] = {}
+    for task_name, label_names in TASK_EXPORT_SPECS.items():
+        predictions = chunk_predictions_by_task.get(task_name, [])
+        if not predictions:
+            continue
+        aggregated_by_task[task_name] = aggregate_chunk_predictions(
+            predictions,
+            num_classes=len(label_names),
+            instance_sec=instance_sec,
+            speech_durations=speech_durations,
+        )
+
+    flattened: dict[str, np.ndarray] = {}
+    speech_ids = sorted({speech_id for task_map in aggregated_by_task.values() for speech_id in task_map})
+    for speech_id in speech_ids:
+        matrices = []
+        for task_name, label_names in TASK_EXPORT_SPECS.items():
+            task_map = aggregated_by_task.get(task_name)
+            if task_map is None or speech_id not in task_map:
+                continue
+            matrices.append(task_map[speech_id][:, : len(label_names)])
+        if matrices:
+            flattened[speech_id] = np.concatenate(matrices, axis=1)
+    return flattened
+
+
+def active_label_order(chunk_predictions_by_task: dict[str, list[SpeechChunkPrediction]]) -> list[str]:
+    enabled = set()
+    for task_name, names in TASK_EXPORT_SPECS.items():
+        if chunk_predictions_by_task.get(task_name):
+            enabled.update(names)
+    return [label_name for label_name in PLOTTED_LABEL_ORDER if label_name in enabled]
 
 
 def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.device) -> CrowdReactionModel:
     model = CrowdReactionModel(
-        num_classes=int(config["model"]["num_classes"]),
         beats_checkpoint_path=config["model"]["beats_checkpoint_path"],
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),
         chunk_sec=float(config["data"]["chunk_sec"]),
         instance_sec=float(config["data"]["instance_sec"]),
+        tasks_config=config.get("tasks"),
     ).to(device)
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     state_dict = checkpoint.get("model_state_dict", checkpoint)
@@ -276,7 +359,7 @@ def draw_intervals(
 def overlay_events(
     ax: plt.Axes,
     *,
-    predicted_bins: np.ndarray,
+    predicted_event_bins: np.ndarray,
     ground_truth_annotations: dict[str, list[tuple[float, float]]],
     instance_sec: float,
 ) -> None:
@@ -284,7 +367,6 @@ def overlay_events(
     gap = 0.01
     base = 0.99
     num_gt_bands = len([label for label in GROUND_TRUTH_LABEL_ORDER if label in ground_truth_annotations])
-    total_bands = num_gt_bands + predicted_bins.shape[1]
 
     current_band = 0
     for label in GROUND_TRUTH_LABEL_ORDER:
@@ -303,19 +385,17 @@ def overlay_events(
         )
         current_band += 1
 
-    for class_index in range(predicted_bins.shape[1]):
-        top = base - current_band * (band_height + gap)
-        pred_bottom = max(0.0, top - band_height)
-        pred_intervals = contiguous_regions(predicted_bins[:, class_index].astype(np.int64), instance_sec=instance_sec)
-        draw_intervals(
-            ax,
-            pred_intervals,
-            y_min=pred_bottom,
-            y_max=top,
-            color=PREDICTION_COLORS[class_index],
-            label=f"Pred {CLASS_NAMES[class_index]}",
-        )
-        current_band += 1
+    top = base - current_band * (band_height + gap)
+    pred_bottom = max(0.0, top - band_height)
+    pred_intervals = contiguous_regions(predicted_event_bins.astype(np.int64), instance_sec=instance_sec)
+    draw_intervals(
+        ax,
+        pred_intervals,
+        y_min=pred_bottom,
+        y_max=top,
+        color=PREDICTION_COLORS["relevant_event"],
+        label="Pred relevant_event",
+    )
 
 
 def plot_speech(
@@ -323,6 +403,7 @@ def plot_speech(
     audio_path: str,
     speech_id: str,
     predicted_probs: np.ndarray,
+    label_names: list[str],
     ground_truth_annotations: dict[str, list[tuple[float, float]]],
     sample_rate: int,
     instance_sec: float,
@@ -350,10 +431,11 @@ def plot_speech(
     )
     fig.colorbar(image, ax=ax, format="%+2.0f dB")
 
-    predicted_binary = (predicted_probs >= threshold).astype(np.int64)
+    event_index = label_names.index("relevant_event")
+    predicted_binary = (predicted_probs[:, event_index] >= threshold).astype(np.int64)
     overlay_events(
         ax,
-        predicted_bins=predicted_binary,
+        predicted_event_bins=predicted_binary,
         ground_truth_annotations=ground_truth_annotations,
         instance_sec=instance_sec,
     )
@@ -361,15 +443,15 @@ def plot_speech(
     score_ax = ax.twinx()
     num_steps = predicted_probs.shape[0]
     centers = (np.arange(num_steps, dtype=np.float32) + 0.5) * float(instance_sec)
-    for class_index in range(predicted_probs.shape[1]):
+    for class_index, label_name in enumerate(label_names):
         score_ax.plot(
             centers,
             predicted_probs[:, class_index],
-            color=SCORE_LINE_COLORS[class_index],
+            color=SCORE_LINE_COLORS[label_name],
             linewidth=1.75,
             alpha=0.95,
             drawstyle="steps-mid",
-            label=f"Score {CLASS_NAMES[class_index]}",
+            label=f"Score {label_name}",
         )
     score_ax.set_ylim(0.0, 1.0)
     score_ax.set_ylabel("Predicted probability")
@@ -414,7 +496,8 @@ def main() -> None:
     val_loader = build_val_loader(config, split_data.val_records)
     model = load_model(config, args.checkpoint, device)
 
-    _, _, chunk_predictions = collect_strong_predictions(model, val_loader, device=device)
+    chunk_predictions_by_task = collect_multitask_chunk_predictions(model, val_loader, device=device)
+    label_names = active_label_order(chunk_predictions_by_task)
 
     record_by_speech = {}
     for record in split_data.val_records:
@@ -424,9 +507,8 @@ def main() -> None:
     for event in split_data.strong_events:
         speech_durations[event.speech_id] = max(speech_durations.get(event.speech_id, 0.0), float(event.offset_sec))
 
-    aggregated_probs = aggregate_chunk_predictions(
-        chunk_predictions,
-        num_classes=int(config["model"]["num_classes"]),
+    aggregated_probs = aggregate_multitask_probs(
+        chunk_predictions_by_task,
         instance_sec=float(config["data"]["instance_sec"]),
         speech_durations=speech_durations,
     )
@@ -442,12 +524,13 @@ def main() -> None:
             aggregated_probs[speech_id].shape[0],
         )
 
-        pred_pad = np.zeros((num_bins, int(config["model"]["num_classes"])), dtype=np.float32)
+        pred_pad = np.zeros((num_bins, len(label_names)), dtype=np.float32)
         pred_pad[: aggregated_probs[speech_id].shape[0]] = aggregated_probs[speech_id]
         strong_txt_path = strong_text_index.get(normalize_name(record.audio_path))
         ground_truth_annotations = parse_raw_strong_annotations(str(strong_txt_path)) if strong_txt_path is not None else {}
         predicted_regions = predicted_regions_from_probs(
             pred_pad,
+            label_names=label_names,
             threshold=threshold,
             instance_sec=float(config["data"]["instance_sec"]),
         )
@@ -455,12 +538,13 @@ def main() -> None:
 
         stem = sanitize_stem(speech_id)
         output_path = output_dir / f"{stem}.png"
-        predicted_annotation_path = output_dir / f"{stem}.predicted.tsv"
-        ground_truth_annotation_path = output_dir / f"{stem}.ground_truth.tsv"
+        predicted_annotation_path = output_dir / f"{stem}.predicted.csv"
+        ground_truth_annotation_path = output_dir / f"{stem}.ground_truth.csv"
         plot_speech(
             audio_path=record.audio_path,
             speech_id=speech_id,
             predicted_probs=pred_pad,
+            label_names=label_names,
             ground_truth_annotations=ground_truth_annotations,
             sample_rate=int(config["data"]["sample_rate"]),
             instance_sec=float(config["data"]["instance_sec"]),

@@ -9,11 +9,12 @@ import torchaudio
 from crowd_reaction.data import (
     WeakChunkDataset,
     build_split_records,
+    collate_batch,
     normalize_name,
     parse_strong_label_file,
     slice_waveform,
     split_into_instances,
-    weak_row_to_labels,
+    weak_row_to_targets,
 )
 
 
@@ -89,19 +90,106 @@ def test_normalize_name_reconciles_unicode_and_noise_prefix() -> None:
     )
 
 
-def test_weak_row_to_labels_collapses_to_binary_crowd_target() -> None:
-    row = pd.Series(
-        {
-            "clear_disapproval": 0,
-            "unclear_disapproval": 1,
-            "unclear_approval": 0,
-            "clear_approval": 1,
-            "hard_annotation": 1,
-            "no_crowd": 1,
-            "crowd_chorus": 1,
-        }
+def test_weak_row_to_targets_maps_clear_disapproval() -> None:
+    targets = weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 1,
+                "unclear_disapproval": 0,
+                "unclear_approval": 0,
+                "clear_approval": 0,
+                "hard_annotation": 1,
+                "no_crowd": 0,
+                "crowd_chorus": 0,
+            }
+        )
     )
-    assert weak_row_to_labels(row) == (1.0,)
+    assert targets.event_target == (1.0,)
+    assert targets.event_mask == 1.0
+    assert targets.polarity_target == (0.0, 1.0)
+    assert targets.polarity_mask == 1.0
+    assert targets.clarity_target == (1.0, 0.0)
+    assert targets.clarity_mask == 1.0
+
+
+def test_weak_row_to_targets_treats_crowd_chorus_as_event_only() -> None:
+    targets = weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 0,
+                "unclear_disapproval": 0,
+                "unclear_approval": 0,
+                "clear_approval": 0,
+                "hard_annotation": 0,
+                "no_crowd": 0,
+                "crowd_chorus": 1,
+            }
+        )
+    )
+    assert targets.event_target == (1.0,)
+    assert targets.event_mask == 1.0
+    assert targets.polarity_mask == 0.0
+    assert targets.clarity_mask == 0.0
+
+
+def test_weak_row_to_targets_masks_contradictory_no_crowd_and_crowd_labels() -> None:
+    targets = weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 1,
+                "unclear_disapproval": 1,
+                "unclear_approval": 0,
+                "clear_approval": 0,
+                "hard_annotation": 0,
+                "no_crowd": 1,
+                "crowd_chorus": 0,
+            }
+        )
+    )
+    assert targets.event_mask == 0.0
+    assert targets.polarity_target == (0.0, 1.0)
+    assert targets.polarity_mask == 1.0
+    assert targets.clarity_mask == 0.0
+
+
+def test_weak_row_to_targets_masks_ambiguous_polarity_and_clarity() -> None:
+    targets = weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 1,
+                "unclear_disapproval": 0,
+                "unclear_approval": 1,
+                "clear_approval": 0,
+                "hard_annotation": 0,
+                "no_crowd": 0,
+                "crowd_chorus": 0,
+            }
+        )
+    )
+    assert targets.event_target == (1.0,)
+    assert targets.event_mask == 1.0
+    assert targets.polarity_mask == 0.0
+    assert targets.clarity_mask == 0.0
+
+
+def test_weak_row_to_targets_maps_no_crowd_to_negative_event() -> None:
+    targets = weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 0,
+                "unclear_disapproval": 0,
+                "unclear_approval": 0,
+                "clear_approval": 0,
+                "hard_annotation": 1,
+                "no_crowd": 1,
+                "crowd_chorus": 0,
+            }
+        )
+    )
+    assert targets.event_target == (0.0,)
+    assert targets.event_mask == 1.0
+    assert targets.polarity_mask == 0.0
+    assert targets.clarity_mask == 0.0
 
 
 def test_parse_strong_label_file_ignores_non_target_labels(tmp_path: Path) -> None:
@@ -113,21 +201,6 @@ def test_parse_strong_label_file_ignores_non_target_labels(tmp_path: Path) -> No
         (0, 1.0, 2.0),
         (0, 2.0, 3.0),
     ]
-
-
-def test_weak_row_to_labels_no_crowd_is_negative() -> None:
-    row = pd.Series(
-        {
-            "clear_disapproval": 0,
-            "unclear_disapproval": 0,
-            "unclear_approval": 0,
-            "clear_approval": 0,
-            "hard_annotation": 1,
-            "no_crowd": 1,
-            "crowd_chorus": 0,
-        }
-    )
-    assert weak_row_to_labels(row) == (0.0,)
 
 
 def test_slice_waveform_pads_to_chunk_length() -> None:
@@ -170,14 +243,32 @@ def test_build_split_records_loads_audio_from_original_audio_dir(tmp_path: Path)
         strong_labels_dir=str(strong_dir),
         original_audio_dir=str(audio_dir),
     )
-    dataset = WeakChunkDataset(split_data.val_records, sample_rate=16000, chunk_sec=20.0, instance_sec=1.0, num_classes=1)
+    dataset = WeakChunkDataset(split_data.val_records, sample_rate=16000, chunk_sec=20.0, instance_sec=1.0)
     item = dataset[0]
 
     assert Path(split_data.val_records[0].audio_path).parent == audio_dir
     assert item["waveform"].shape == (16000 * 20,)
     assert item["instances"].shape == (20, 16000)
-    assert torch.equal(item["labels"], torch.tensor([1.0]))
+    assert torch.equal(item["targets"]["event_target"], torch.tensor([1.0]))
+    assert torch.equal(item["targets"]["polarity_target"], torch.tensor([0.0, 1.0]))
+    assert torch.equal(item["targets"]["clarity_target"], torch.tensor([1.0, 0.0]))
     assert float(item["waveform"][-1].item()) > 0.0
+
+
+def test_collate_batch_stacks_structured_targets(tmp_path: Path) -> None:
+    info_path, weak_csv_path, strong_dir, audio_dir = _write_dataset_fixture(tmp_path)
+    split_data = build_split_records(
+        audios_info_csv=str(info_path),
+        weak_labels_csv=str(weak_csv_path),
+        strong_labels_dir=str(strong_dir),
+        original_audio_dir=str(audio_dir),
+    )
+    dataset = WeakChunkDataset(split_data.train_records + split_data.val_records, sample_rate=16000, chunk_sec=20.0, instance_sec=1.0)
+    batch = collate_batch([dataset[0], dataset[1]])
+    assert batch["targets"]["event_target"].shape == (2, 1)
+    assert batch["targets"]["polarity_target"].shape == (2, 2)
+    assert batch["targets"]["clarity_target"].shape == (2, 2)
+    assert batch["targets"]["event_mask"].shape == (2,)
 
 
 def test_strong_labelled_files_missing_txt_fail_loudly(tmp_path: Path) -> None:

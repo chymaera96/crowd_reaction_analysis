@@ -10,6 +10,13 @@ import torch
 from .data import StrongEvent
 
 
+TASK_CLASS_NAMES = {
+    "event": ["relevant_event"],
+    "polarity": ["approval", "disapproval"],
+    "clarity": ["clear", "unclear"],
+}
+
+
 def _safe_divide(numerator: float, denominator: float) -> float:
     if denominator <= 0:
         return 0.0
@@ -56,29 +63,64 @@ def binary_average_precision(targets: np.ndarray, probs: np.ndarray) -> float:
     return float(np.sum(precision * gain))
 
 
-def evaluate_weak(targets: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> dict[str, Any]:
+def evaluate_weak(
+    targets: np.ndarray,
+    probs: np.ndarray,
+    threshold: float = 0.5,
+    mask: np.ndarray | None = None,
+    class_names: list[str] | None = None,
+) -> dict[str, Any]:
     if targets.shape != probs.shape:
         raise ValueError("targets and probs must have the same shape")
 
+    if mask is None:
+        mask = np.ones((targets.shape[0], 1), dtype=np.float32)
+    mask = np.asarray(mask, dtype=np.float32)
+    if mask.ndim == 1:
+        mask = mask[:, None]
+    if mask.shape[0] != targets.shape[0]:
+        raise ValueError("mask must have the same batch dimension as targets")
+    if mask.shape[1] == 1 and targets.shape[1] != 1:
+        mask = np.repeat(mask, targets.shape[1], axis=1)
+    if mask.shape != targets.shape:
+        raise ValueError("mask must be shape [N, 1] or [N, C]")
+
     per_class = []
     for class_index in range(targets.shape[1]):
-        class_targets = targets[:, class_index].astype(np.int64)
-        class_probs = probs[:, class_index].astype(np.float64)
+        valid = mask[:, class_index] >= 0.5
+        class_targets = targets[valid, class_index].astype(np.int64)
+        class_probs = probs[valid, class_index].astype(np.float64)
         per_class.append(
             {
                 "class_index": class_index,
-                "auroc": binary_auroc(class_targets, class_probs),
-                "average_precision": binary_average_precision(class_targets, class_probs),
-                "f1": binary_f1_score(class_targets, class_probs, threshold=threshold),
+                "class_name": None if class_names is None else class_names[class_index],
+                "num_valid": int(valid.sum()),
+                "auroc": binary_auroc(class_targets, class_probs) if class_targets.size else 0.0,
+                "average_precision": binary_average_precision(class_targets, class_probs) if class_targets.size else 0.0,
+                "f1": binary_f1_score(class_targets, class_probs, threshold=threshold) if class_targets.size else 0.0,
             }
         )
 
     return {
         "per_class": per_class,
+        "num_valid": int((mask[:, 0] >= 0.5).sum()) if mask.shape[1] else 0,
         "macro_auroc": float(np.mean([item["auroc"] for item in per_class])) if per_class else 0.0,
         "macro_average_precision": float(np.mean([item["average_precision"] for item in per_class])) if per_class else 0.0,
         "macro_f1": float(np.mean([item["f1"] for item in per_class])) if per_class else 0.0,
     }
+
+
+def evaluate_multitask_weak(task_predictions: dict[str, dict[str, np.ndarray]], threshold: float = 0.5) -> dict[str, Any]:
+    metrics: dict[str, Any] = {}
+    for task_name, payload in task_predictions.items():
+        metrics[task_name] = evaluate_weak(
+            payload["targets"],
+            payload["probs"],
+            threshold=threshold,
+            mask=payload["mask"],
+            class_names=TASK_CLASS_NAMES.get(task_name),
+        )
+    return metrics
 
 
 @dataclass(frozen=True)
@@ -291,29 +333,47 @@ def collect_strong_predictions(
     dataloader: torch.utils.data.DataLoader,
     *,
     device: torch.device,
-) -> tuple[np.ndarray, np.ndarray, list[SpeechChunkPrediction]]:
-    all_targets = []
-    all_probs = []
+) -> tuple[dict[str, dict[str, np.ndarray]], list[SpeechChunkPrediction]]:
+    task_keys = {
+        "event": ("event_target", "event_mask"),
+        "polarity": ("polarity_target", "polarity_mask"),
+        "clarity": ("clarity_target", "clarity_mask"),
+    }
+    collected: dict[str, dict[str, list[np.ndarray]]] = {
+        task_name: {"targets": [], "probs": [], "mask": []}
+        for task_name in task_keys
+    }
     chunk_predictions: list[SpeechChunkPrediction] = []
 
     for batch in dataloader:
         instances = batch["instances"].to(device)
-        labels = batch["labels"].cpu().numpy()
-        logits, bag_probs = model(instances=instances)
-        instance_probs = torch.sigmoid(logits).cpu().numpy()
-        all_targets.append(labels)
-        all_probs.append(bag_probs.cpu().numpy())
+        outputs = model(instances=instances)
 
+        for task_name, (target_key, mask_key) in task_keys.items():
+            if task_name not in outputs.bag_probabilities:
+                continue
+            collected[task_name]["targets"].append(batch["targets"][target_key].cpu().numpy())
+            collected[task_name]["probs"].append(outputs.bag_probabilities[task_name].cpu().numpy())
+            collected[task_name]["mask"].append(batch["targets"][mask_key].cpu().numpy())
+
+        event_instance_probs = torch.sigmoid(outputs.instance_logits["event"]).cpu().numpy()
         for batch_index in range(instances.shape[0]):
             chunk_predictions.append(
                 SpeechChunkPrediction(
                     speech_id=batch["speech_id"][batch_index],
                     chunk_start_sec=float(batch["chunk_start_sec"][batch_index].item()),
                     chunk_end_sec=float(batch["chunk_end_sec"][batch_index].item()),
-                    instance_probs=instance_probs[batch_index],
+                    instance_probs=event_instance_probs[batch_index],
                 )
             )
 
-    weak_targets = np.concatenate(all_targets, axis=0) if all_targets else np.zeros((0, 0), dtype=np.float32)
-    weak_probs = np.concatenate(all_probs, axis=0) if all_probs else np.zeros((0, 0), dtype=np.float32)
-    return weak_targets, weak_probs, chunk_predictions
+    weak_task_predictions: dict[str, dict[str, np.ndarray]] = {}
+    for task_name, payload in collected.items():
+        if not payload["targets"]:
+            continue
+        weak_task_predictions[task_name] = {
+            "targets": np.concatenate(payload["targets"], axis=0),
+            "probs": np.concatenate(payload["probs"], axis=0),
+            "mask": np.concatenate(payload["mask"], axis=0),
+        }
+    return weak_task_predictions, chunk_predictions

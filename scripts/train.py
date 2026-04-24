@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import defaultdict
 import json
 import math
 import os
@@ -21,12 +22,19 @@ if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
 from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
-from crowd_reaction.eval import collect_strong_predictions, evaluate_strong, evaluate_weak
+from crowd_reaction.eval import collect_strong_predictions, evaluate_multitask_weak, evaluate_strong
 from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss
 
 
+TASK_SPECS = {
+    "event": {"target_key": "event_target", "mask_key": "event_mask", "loss_weight": 1.0},
+    "polarity": {"target_key": "polarity_target", "mask_key": "polarity_mask", "loss_weight_key": "lambda_polarity"},
+    "clarity": {"target_key": "clarity_target", "mask_key": "clarity_mask", "loss_weight_key": "lambda_clarity"},
+}
+
+
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train crowd reaction SED with frozen BEATs and MMM MIL loss")
+    parser = argparse.ArgumentParser(description="Train crowd reaction SED with frozen BEATs and hierarchical MMM MIL loss")
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and metrics")
     parser.add_argument("--run-id", default=None, help="Run identifier used for W&B and checkpoint subdirectory naming")
@@ -68,7 +76,6 @@ def build_dataloader(data_config: dict[str, Any], loader_config: dict[str, Any],
         sample_rate=int(data_config["sample_rate"]),
         chunk_sec=float(data_config["chunk_sec"]),
         instance_sec=float(data_config["instance_sec"]),
-        num_classes=int(data_config["num_classes"]),
     )
     return DataLoader(
         dataset,
@@ -79,20 +86,63 @@ def build_dataloader(data_config: dict[str, Any], loader_config: dict[str, Any],
     )
 
 
+def _task_class_weights(loss_config: dict[str, Any], device: torch.device) -> dict[str, torch.Tensor]:
+    weights: dict[str, torch.Tensor] = {}
+    for task_name in ("event", "polarity", "clarity"):
+        key = f"{task_name}_class_weights"
+        value = loss_config.get(key)
+        if value is not None:
+            weights[task_name] = torch.tensor(value, dtype=torch.float32, device=device)
+    return weights
+
+
+def compute_multitask_loss(
+    outputs,
+    batch_targets: dict[str, torch.Tensor],
+    *,
+    loss_config: dict[str, Any],
+    task_class_weights: dict[str, torch.Tensor],
+) -> tuple[torch.Tensor, dict[str, float]]:
+    total_loss = None
+    loss_values: dict[str, float] = {}
+
+    for task_name, spec in TASK_SPECS.items():
+        if task_name not in outputs.instance_logits:
+            continue
+        target_tensor = batch_targets[spec["target_key"]]
+        mask_tensor = batch_targets[spec["mask_key"]]
+        task_loss = mmm_bag_loss(
+            outputs.instance_logits[task_name],
+            target_tensor,
+            class_weights=task_class_weights.get(task_name),
+            bag_mask=mask_tensor,
+        )
+        if task_name == "event":
+            weighted_loss = task_loss
+        else:
+            weighted_loss = float(loss_config.get(spec["loss_weight_key"], 0.5)) * task_loss
+        total_loss = weighted_loss if total_loss is None else total_loss + weighted_loss
+        loss_values[f"{task_name}_loss"] = float(task_loss.detach().cpu().item())
+
+    if total_loss is None:
+        raise RuntimeError("No task losses were computed; check enabled task configuration")
+    loss_values["total_loss"] = float(total_loss.detach().cpu().item())
+    return total_loss, loss_values
+
+
 def evaluate_epoch(
     model: CrowdReactionModel,
     val_loader: DataLoader,
     *,
     strong_events,
     instance_sec: float,
-    num_classes: int,
     threshold: float,
     event_collar_sec: float,
     event_offset_ratio: float,
     device: torch.device,
 ) -> dict[str, Any]:
-    weak_targets, weak_probs, chunk_predictions = collect_strong_predictions(model, val_loader, device=device)
-    weak_metrics = evaluate_weak(weak_targets, weak_probs, threshold=threshold)
+    weak_predictions, chunk_predictions = collect_strong_predictions(model, val_loader, device=device)
+    weak_metrics = evaluate_multitask_weak(weak_predictions, threshold=threshold)
 
     strong_metrics: dict[str, Any] | None = None
     if strong_events:
@@ -100,7 +150,7 @@ def evaluate_epoch(
         strong_metrics = evaluate_strong(
             chunk_predictions,
             strong_events,
-            num_classes=num_classes,
+            num_classes=1,
             instance_sec=instance_sec,
             speech_durations=speech_durations,
             threshold=threshold,
@@ -184,7 +234,7 @@ def best_validation_score(metrics: dict[str, Any]) -> float:
         score = float(strong["segment_macro_f1"])
         if math.isfinite(score):
             return score
-    return float(metrics["weak"]["macro_average_precision"])
+    return float(metrics["weak"]["event"]["macro_average_precision"])
 
 
 def main() -> None:
@@ -210,44 +260,47 @@ def main() -> None:
     val_loader = build_dataloader(config["data"], config["val"], split_datasets.val_records, shuffle=False)
 
     model = CrowdReactionModel(
-        num_classes=int(config["model"]["num_classes"]),
         beats_checkpoint_path=config["model"]["beats_checkpoint_path"],
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),
         chunk_sec=float(config["data"]["chunk_sec"]),
         instance_sec=float(config["data"]["instance_sec"]),
+        tasks_config=config.get("tasks"),
     ).to(device)
 
     optimizer = torch.optim.AdamW(
-        model.head.parameters(),
+        model.heads.parameters(),
         lr=float(config["optimizer"]["lr"]),
         weight_decay=float(config["optimizer"].get("weight_decay", 0.0)),
     )
 
-    class_weights = config["loss"].get("class_weights")
-    class_weights_tensor = None
-    if class_weights is not None:
-        class_weights_tensor = torch.tensor(class_weights, dtype=torch.float32, device=device)
+    task_class_weights = _task_class_weights(config.get("loss", {}), device)
 
     best_val_score = float("-inf")
     history = []
 
     for epoch in range(1, int(config["trainer"]["epochs"]) + 1):
         model.train()
-        running_loss = 0.0
+        running_totals = defaultdict(float)
         batches = 0
 
         for batch in train_loader:
             optimizer.zero_grad()
             instances = batch["instances"].to(device)
-            labels = batch["labels"].to(device)
-            logits, _ = model(instances=instances)
-            loss = mmm_bag_loss(logits, labels, class_weights=class_weights_tensor)
+            batch_targets = {key: value.to(device) for key, value in batch["targets"].items()}
+            outputs = model(instances=instances)
+            loss, loss_values = compute_multitask_loss(
+                outputs,
+                batch_targets,
+                loss_config=config.get("loss", {}),
+                task_class_weights=task_class_weights,
+            )
             loss.backward()
             optimizer.step()
 
-            running_loss += float(loss.detach().cpu().item())
+            for key, value in loss_values.items():
+                running_totals[key] += value
             batches += 1
 
         model.eval()
@@ -256,14 +309,18 @@ def main() -> None:
             val_loader,
             strong_events=split_datasets.strong_events,
             instance_sec=float(config["data"]["instance_sec"]),
-            num_classes=int(config["model"]["num_classes"]),
             threshold=float(config["val"].get("threshold", 0.5)),
             event_collar_sec=float(config["val"].get("event_collar_sec", config["data"]["instance_sec"])),
             event_offset_ratio=float(config["val"].get("event_offset_ratio", 0.2)),
             device=device,
         )
         metrics["epoch"] = epoch
-        metrics["train_loss"] = running_loss / max(batches, 1)
+        metrics["train_loss"] = running_totals["total_loss"] / max(batches, 1)
+        metrics["train_event_loss"] = running_totals["event_loss"] / max(batches, 1)
+        if "polarity_loss" in running_totals:
+            metrics["train_polarity_loss"] = running_totals["polarity_loss"] / max(batches, 1)
+        if "clarity_loss" in running_totals:
+            metrics["train_clarity_loss"] = running_totals["clarity_loss"] / max(batches, 1)
         history.append(metrics)
 
         save_checkpoint(
@@ -287,16 +344,23 @@ def main() -> None:
                 config=config,
             )
         strong = metrics.get("strong")
+        weak_event = metrics["weak"]["event"]
+        weak_polarity = metrics["weak"].get("polarity")
+        weak_clarity = metrics["weak"].get("clarity")
 
         print(
             json.dumps(
                 {
                     "epoch": epoch,
                     "train_loss": metrics["train_loss"],
+                    "train_event_loss": metrics["train_event_loss"],
+                    "train_polarity_loss": metrics.get("train_polarity_loss"),
+                    "train_clarity_loss": metrics.get("train_clarity_loss"),
                     "val_score": current_val_score,
-                    "weak_macro_auroc": metrics["weak"]["macro_auroc"],
-                    "weak_macro_ap": metrics["weak"]["macro_average_precision"],
-                    "weak_macro_f1": metrics["weak"]["macro_f1"],
+                    "weak_event_macro_ap": weak_event["macro_average_precision"],
+                    "weak_event_macro_f1": weak_event["macro_f1"],
+                    "weak_polarity_macro_ap": None if weak_polarity is None else weak_polarity["macro_average_precision"],
+                    "weak_clarity_macro_ap": None if weak_clarity is None else weak_clarity["macro_average_precision"],
                     "strong_segment_macro_f1": None if strong is None else strong["segment_macro_f1"],
                     "strong_event_f1": None if strong is None else strong["event_f1"],
                 }

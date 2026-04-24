@@ -1,16 +1,20 @@
 """Crowd reaction sound event detection package."""
 
-from .data import SplitDatasets, StrongEvent, WeakChunkDataset, build_split_records
-from .eval import evaluate_strong, evaluate_weak
-from .model import CrowdReactionModel, DummyFeatureExtractor, mmm_bag_loss
+from .data import SplitDatasets, StrongEvent, WeakBagTargets, WeakChunkDataset, build_split_records, weak_row_to_targets
+from .eval import evaluate_multitask_weak, evaluate_strong, evaluate_weak
+from .model import CrowdReactionModel, DummyFeatureExtractor, MultiTaskOutputs, mmm_bag_loss
 
 __all__ = [
     "SplitDatasets",
     "CrowdReactionModel",
     "DummyFeatureExtractor",
+    "MultiTaskOutputs",
     "StrongEvent",
+    "WeakBagTargets",
     "WeakChunkDataset",
     "build_split_records",
+    "weak_row_to_targets",
+    "evaluate_multitask_weak",
     "evaluate_strong",
     "evaluate_weak",
     "mmm_bag_loss",
