@@ -13,6 +13,7 @@ data:
   weak_labels_csv: /gpfs/scratch/acw723/data/weak_labelling/_weak_labels.csv
   strong_labels_dir: /gpfs/scratch/acw723/data/strong_labelling
   original_audio_dir: /gpfs/scratch/acw723/data/original_audio_files
+  negative_data_dir: /gpfs/scratch/acw723/data/negative_data
   sample_rate: 16000
   chunk_sec: 20.0
   instance_sec: 1.0
@@ -25,9 +26,9 @@ model:
 tasks:
   event:
     enabled: true
-  polarity:
+  approval:
     enabled: true
-  clarity:
+  disapproval:
     enabled: true
 
 optimizer:
@@ -36,10 +37,11 @@ optimizer:
 
 loss:
   event_class_weights: [1.0]
-  polarity_class_weights: [1.0, 1.0]
-  clarity_class_weights: [1.0, 1.0]
-  lambda_polarity: 0.5
-  lambda_clarity: 0.5
+  approval_class_weights: [1.0]
+  disapproval_class_weights: [1.0]
+  lambda_approval: 0.5
+  lambda_disapproval: 0.5
+  unclear_label_weight: 0.5
 
 trainer:
   epochs: 25

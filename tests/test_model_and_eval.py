@@ -44,16 +44,16 @@ def test_weak_eval_respects_masks() -> None:
                 "probs": np.array([[0.9], [0.1], [0.2]], dtype=np.float32),
                 "mask": np.array([1.0, 1.0, 0.0], dtype=np.float32),
             },
-            "polarity": {
-                "targets": np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32),
-                "probs": np.array([[0.8, 0.2], [0.3, 0.7]], dtype=np.float32),
+            "approval": {
+                "targets": np.array([[1.0], [0.0]], dtype=np.float32),
+                "probs": np.array([[0.8], [0.3]], dtype=np.float32),
                 "mask": np.array([1.0, 0.0], dtype=np.float32),
             },
         },
         threshold=0.5,
     )
     assert metrics["event"]["num_valid"] == 2
-    assert metrics["polarity"]["num_valid"] == 1
+    assert metrics["approval"]["num_valid"] == 1
 
 
 def test_strong_eval_merges_overlapping_chunks() -> None:
@@ -112,56 +112,52 @@ def test_synthetic_one_step_training_smoke() -> None:
     outputs = model(instances=instances)
     loss = (
         mmm_bag_loss(outputs.instance_logits["event"], torch.tensor([[1.0], [0.0], [1.0]]))
-        + 0.5 * mmm_bag_loss(outputs.instance_logits["polarity"], torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]]), bag_mask=torch.tensor([1.0, 1.0, 1.0]))
-        + 0.5 * mmm_bag_loss(outputs.instance_logits["clarity"], torch.tensor([[1.0, 0.0], [0.0, 1.0], [1.0, 0.0]]), bag_mask=torch.tensor([1.0, 1.0, 0.0]))
+        + 0.5 * mmm_bag_loss(outputs.instance_logits["approval"], torch.tensor([[1.0], [0.0], [1.0]]), bag_mask=torch.tensor([1.0, 1.0, 0.5]))
+        + 0.5 * mmm_bag_loss(outputs.instance_logits["disapproval"], torch.tensor([[0.0], [1.0], [1.0]]), bag_mask=torch.tensor([1.0, 1.0, 0.5]))
     )
     loss.backward()
     optimizer.step()
 
     assert outputs.instance_logits["event"].shape == (3, 20, 1)
     assert outputs.bag_probabilities["event"].shape == (3, 1)
-    assert outputs.instance_logits["polarity"].shape == (3, 20, 2)
-    assert outputs.instance_logits["clarity"].shape == (3, 20, 2)
+    assert outputs.instance_logits["approval"].shape == (3, 20, 1)
+    assert outputs.instance_logits["disapproval"].shape == (3, 20, 1)
     assert float(loss.detach().item()) > 0.0
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
     probs = np.array(
         [
-            [0.2, 0.1, 0.9, 0.1, 0.2],
-            [0.8, 0.6, 0.4, 0.8, 0.2],
-            [0.9, 0.7, 0.4, 0.2, 0.9],
-            [0.4, 0.2, 0.6, 0.2, 0.8],
-            [0.7, 0.1, 0.1, 0.7, 0.3],
+            [0.2, 0.1, 0.9],
+            [0.8, 0.6, 0.4],
+            [0.9, 0.7, 0.6],
+            [0.4, 0.2, 0.6],
+            [0.7, 0.1, 0.6],
         ],
         dtype=np.float32,
     )
     regions = infer_module.predicted_regions_from_probs(
         probs,
-        label_names=["relevant_event", "approval", "disapproval", "clear", "unclear"],
+        label_names=["relevant_event", "approval", "disapproval"],
         threshold=0.5,
         instance_sec=1.0,
     )
 
     assert regions == [
-        (0.0, 1.0, "disapproval"),
         (1.0, 3.0, "approval"),
         (1.0, 3.0, "relevant_event"),
-        (1.0, 2.0, "clear"),
-        (2.0, 4.0, "unclear"),
-        (4.0, 5.0, "clear"),
+        (2.0, 3.0, "disapproval"),
+        (4.0, 5.0, "disapproval"),
         (4.0, 5.0, "relevant_event"),
     ]
 
     output_path = tmp_path / "predicted.csv"
     infer_module.write_sonic_visualiser_regions(output_path, regions)
     assert output_path.read_text(encoding="utf-8") == (
-        "0.000000,1.000000,disapproval\n"
         "1.000000,2.000000,approval\n"
         "1.000000,2.000000,relevant_event\n"
-        "1.000000,1.000000,clear\n"
-        "2.000000,2.000000,unclear\n"
-        "4.000000,1.000000,clear\n"
+        "2.000000,1.000000,disapproval\n"
+        "4.000000,1.000000,disapproval\n"
         "4.000000,1.000000,relevant_event\n"
     )
 
@@ -177,34 +173,34 @@ def test_infer_aggregate_multitask_probs_flattens_task_outputs() -> None:
                     instance_probs=np.array([[0.1], [0.9], [0.2]], dtype=np.float32),
                 )
             ],
-            "polarity": [
+            "approval": [
                 SpeechChunkPrediction(
                     speech_id="speech-1",
                     chunk_start_sec=0.0,
                     chunk_end_sec=3.0,
-                    instance_probs=np.array([[0.7, 0.1], [0.2, 0.8], [0.3, 0.4]], dtype=np.float32),
+                    instance_probs=np.array([[0.7], [0.2], [0.3]], dtype=np.float32),
                 )
             ],
-            "clarity": [
+            "disapproval": [
                 SpeechChunkPrediction(
                     speech_id="speech-1",
                     chunk_start_sec=0.0,
                     chunk_end_sec=3.0,
-                    instance_probs=np.array([[0.9, 0.1], [0.6, 0.3], [0.2, 0.7]], dtype=np.float32),
+                    instance_probs=np.array([[0.1], [0.8], [0.4]], dtype=np.float32),
                 )
             ],
         },
         instance_sec=1.0,
         speech_durations={"speech-1": 3.0},
     )
-    assert aggregated["speech-1"].shape == (3, 5)
+    assert aggregated["speech-1"].shape == (3, 3)
     assert np.allclose(
         aggregated["speech-1"],
         np.array(
             [
-                [0.1, 0.7, 0.1, 0.9, 0.1],
-                [0.9, 0.2, 0.8, 0.6, 0.3],
-                [0.2, 0.3, 0.4, 0.2, 0.7],
+                [0.1, 0.7, 0.1],
+                [0.9, 0.2, 0.8],
+                [0.2, 0.3, 0.4],
             ],
             dtype=np.float32,
         ),

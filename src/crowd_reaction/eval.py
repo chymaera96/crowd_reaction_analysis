@@ -12,8 +12,8 @@ from .data import StrongEvent
 
 TASK_CLASS_NAMES = {
     "event": ["relevant_event"],
-    "polarity": ["approval", "disapproval"],
-    "clarity": ["clear", "unclear"],
+    "approval": ["approval"],
+    "disapproval": ["disapproval"],
 }
 
 
@@ -336,8 +336,8 @@ def collect_strong_predictions(
 ) -> tuple[dict[str, dict[str, np.ndarray]], list[SpeechChunkPrediction]]:
     task_keys = {
         "event": ("event_target", "event_mask"),
-        "polarity": ("polarity_target", "polarity_mask"),
-        "clarity": ("clarity_target", "clarity_mask"),
+        "approval": ("approval_target", "approval_mask"),
+        "disapproval": ("disapproval_target", "disapproval_mask"),
     }
     collected: dict[str, dict[str, list[np.ndarray]]] = {
         task_name: {"targets": [], "probs": [], "mask": []}

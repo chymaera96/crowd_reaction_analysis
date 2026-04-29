@@ -1,7 +1,7 @@
 # crowd_reaction_analysis
 Base repository for analysis of crowd reactions in political speeches.
 
-This repo includes a PyTorch training package for weakly supervised sound event detection on 20 second speech chunks, using a frozen BEATs encoder and a multi-instance learning head for a single binary `crowd` label.
+This repo includes a PyTorch training package for weakly supervised sound event detection on 20 second speech chunks, using a frozen BEATs encoder and multi-instance learning heads for `crowd`, `approval`, and `disapproval`.
 
 ## Setup
 
@@ -25,8 +25,9 @@ Main entrypoints:
 Dataset inputs:
 - `data/audios_info.csv` decides which source files are strong-labeled and therefore validation-only
 - `data/weak_labelling/_weak_labels.csv` provides the 20 s weak bags
+- `data/negative_data/*.wav` optionally provides additional pre-segmented 20 s `no_crowd` training bags
 - `data/strong_labelling/noise_*.txt` provides strong validation intervals
-- `data/original_audio_files/*.wav` are the only source audio files used for training and validation
+- `data/original_audio_files/*.wav` provides the source audio for the weak/strong metadata-driven records
 
 Known filename inconsistencies in `data/strong_labelling`:
 - `noise_Ukip's Douglas Carswell is booed while asking question at PMQs.txt` should be renamed to `noise_Ukip's Douglas Carswell is booed while asking question at PMQs - video.txt` so it matches the corresponding `.wav` filename.
@@ -34,13 +35,18 @@ Known filename inconsistencies in `data/strong_labelling`:
 - The Jonas Brothers strong-label entry is also missing its matching audio file in `data/strong_labelling/`, so the `.txt` and `.wav` assets are currently inconsistent.
 
 Internal metadata:
-- weak records: `audio_path`, `speech_id`, `chunk_start_sec`, `chunk_end_sec`, `label_0`, `split`
+- weak records: `audio_path`, `speech_id`, `chunk_start_sec`, `chunk_end_sec`, structured task targets, `split`
 - strong events: `speech_id`, `event_class`, `onset_sec`, `offset_sec`
 
 Weak targets:
-- target `0`: `crowd`
+- `event`: binary `relevant_event` / crowd detector
+- `approval`: independent binary approval detector
+- `disapproval`: independent binary disapproval detector
 - weak positives are any of `clear_disapproval`, `unclear_disapproval`, `unclear_approval`, `clear_approval`, or `crowd_chorus`
 - weak negatives are `no_crowd`
+- clear labels train approval/disapproval with full weight; unclear labels train them with `loss.unclear_label_weight`
+- `crowd_chorus` trains only `event`
+- approval/disapproval are masked for `no_crowd` because they are immaterial when no event is present
 - `hard_annotation` is ignored for target construction
 
 Strong validation uses `sed_eval`:
@@ -55,5 +61,6 @@ Checkpoint outputs:
 
 Inference plots:
 - `scripts/infer.py` runs the trained model over the strong-labeled validation files
-- it saves one PNG per file with a spectrogram background, raw ground-truth strong spans, and a continuous binary `crowd` prediction score curve
+- it saves one PNG per file with a spectrogram background, raw ground-truth strong spans, and prediction score curves for `relevant_event`, `approval`, and `disapproval`
+- exported approval/disapproval regions are hard-gated by the `relevant_event` threshold
 - if W&B is enabled or `--wandb-mode` / `--run-id` are passed, the saved images are also logged to W&B

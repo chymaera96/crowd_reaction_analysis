@@ -28,8 +28,8 @@ from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss
 
 TASK_SPECS = {
     "event": {"target_key": "event_target", "mask_key": "event_mask", "loss_weight": 1.0},
-    "polarity": {"target_key": "polarity_target", "mask_key": "polarity_mask", "loss_weight_key": "lambda_polarity"},
-    "clarity": {"target_key": "clarity_target", "mask_key": "clarity_mask", "loss_weight_key": "lambda_clarity"},
+    "approval": {"target_key": "approval_target", "mask_key": "approval_mask", "loss_weight_key": "lambda_approval"},
+    "disapproval": {"target_key": "disapproval_target", "mask_key": "disapproval_mask", "loss_weight_key": "lambda_disapproval"},
 }
 
 
@@ -88,7 +88,7 @@ def build_dataloader(data_config: dict[str, Any], loader_config: dict[str, Any],
 
 def _task_class_weights(loss_config: dict[str, Any], device: torch.device) -> dict[str, torch.Tensor]:
     weights: dict[str, torch.Tensor] = {}
-    for task_name in ("event", "polarity", "clarity"):
+    for task_name in ("event", "approval", "disapproval"):
         key = f"{task_name}_class_weights"
         value = loss_config.get(key)
         if value is not None:
@@ -254,6 +254,9 @@ def main() -> None:
         weak_labels_csv=config["data"]["weak_labels_csv"],
         strong_labels_dir=config["data"]["strong_labels_dir"],
         original_audio_dir=config["data"]["original_audio_dir"],
+        negative_data_dir=config["data"].get("negative_data_dir"),
+        chunk_sec=float(config["data"]["chunk_sec"]),
+        unclear_label_weight=float(config.get("loss", {}).get("unclear_label_weight", 0.5)),
     )
 
     train_loader = build_dataloader(config["data"], config["train"], split_datasets.train_records, shuffle=True)
@@ -317,10 +320,10 @@ def main() -> None:
         metrics["epoch"] = epoch
         metrics["train_loss"] = running_totals["total_loss"] / max(batches, 1)
         metrics["train_event_loss"] = running_totals["event_loss"] / max(batches, 1)
-        if "polarity_loss" in running_totals:
-            metrics["train_polarity_loss"] = running_totals["polarity_loss"] / max(batches, 1)
-        if "clarity_loss" in running_totals:
-            metrics["train_clarity_loss"] = running_totals["clarity_loss"] / max(batches, 1)
+        if "approval_loss" in running_totals:
+            metrics["train_approval_loss"] = running_totals["approval_loss"] / max(batches, 1)
+        if "disapproval_loss" in running_totals:
+            metrics["train_disapproval_loss"] = running_totals["disapproval_loss"] / max(batches, 1)
         history.append(metrics)
 
         save_checkpoint(
@@ -345,8 +348,8 @@ def main() -> None:
             )
         strong = metrics.get("strong")
         weak_event = metrics["weak"]["event"]
-        weak_polarity = metrics["weak"].get("polarity")
-        weak_clarity = metrics["weak"].get("clarity")
+        weak_approval = metrics["weak"].get("approval")
+        weak_disapproval = metrics["weak"].get("disapproval")
 
         print(
             json.dumps(
@@ -354,13 +357,13 @@ def main() -> None:
                     "epoch": epoch,
                     "train_loss": metrics["train_loss"],
                     "train_event_loss": metrics["train_event_loss"],
-                    "train_polarity_loss": metrics.get("train_polarity_loss"),
-                    "train_clarity_loss": metrics.get("train_clarity_loss"),
+                    "train_approval_loss": metrics.get("train_approval_loss"),
+                    "train_disapproval_loss": metrics.get("train_disapproval_loss"),
                     "val_score": current_val_score,
                     "weak_event_macro_ap": weak_event["macro_average_precision"],
                     "weak_event_macro_f1": weak_event["macro_f1"],
-                    "weak_polarity_macro_ap": None if weak_polarity is None else weak_polarity["macro_average_precision"],
-                    "weak_clarity_macro_ap": None if weak_clarity is None else weak_clarity["macro_average_precision"],
+                    "weak_approval_macro_ap": None if weak_approval is None else weak_approval["macro_average_precision"],
+                    "weak_disapproval_macro_ap": None if weak_disapproval is None else weak_disapproval["macro_average_precision"],
                     "strong_segment_macro_f1": None if strong is None else strong["segment_macro_f1"],
                     "strong_event_f1": None if strong is None else strong["event_f1"],
                 }

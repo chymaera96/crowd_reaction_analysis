@@ -19,14 +19,6 @@ DISAPPROVAL_LABELS = {
     "clear_disapproval",
     "unclear_disapproval",
 }
-CLEAR_LABELS = {
-    "clear_approval",
-    "clear_disapproval",
-}
-UNCLEAR_LABELS = {
-    "unclear_approval",
-    "unclear_disapproval",
-}
 POSITIVE_EVENT_LABELS = APPROVAL_LABELS | DISAPPROVAL_LABELS | {"crowd_chorus"}
 NEGATIVE_CROWD_LABEL = "no_crowd"
 STRONG_TEXT_GLOB = "noise_*.txt"
@@ -37,10 +29,10 @@ SEGMENT_SUFFIX_PATTERN = re.compile(r"_seg\d+$", flags=re.IGNORECASE)
 class WeakBagTargets:
     event_target: tuple[float, ...]
     event_mask: float
-    polarity_target: tuple[float, ...]
-    polarity_mask: float
-    clarity_target: tuple[float, ...]
-    clarity_mask: float
+    approval_target: tuple[float, ...]
+    approval_mask: float
+    disapproval_target: tuple[float, ...]
+    disapproval_mask: float
 
 
 @dataclass(frozen=True)
@@ -119,11 +111,35 @@ def _row_flag(row: pd.Series, column: str) -> int:
     return int(float(value))
 
 
-def weak_row_to_targets(row: pd.Series) -> WeakBagTargets:
-    approval = any(_row_flag(row, column) > 0 for column in APPROVAL_LABELS)
-    disapproval = any(_row_flag(row, column) > 0 for column in DISAPPROVAL_LABELS)
-    clear = any(_row_flag(row, column) > 0 for column in CLEAR_LABELS)
-    unclear = any(_row_flag(row, column) > 0 for column in UNCLEAR_LABELS)
+def _label_confidence(row: pd.Series, *, clear_label: str, unclear_label: str, unclear_weight: float) -> float:
+    if _row_flag(row, clear_label) > 0:
+        return 1.0
+    if _row_flag(row, unclear_label) > 0:
+        return float(unclear_weight)
+    return 0.0
+
+
+def weak_row_to_targets(row: pd.Series, *, unclear_label_weight: float = 0.5) -> WeakBagTargets:
+    approval_confidence = max(
+        _label_confidence(
+            row,
+            clear_label="clear_approval",
+            unclear_label="unclear_approval",
+            unclear_weight=unclear_label_weight,
+        ),
+        0.0,
+    )
+    disapproval_confidence = max(
+        _label_confidence(
+            row,
+            clear_label="clear_disapproval",
+            unclear_label="unclear_disapproval",
+            unclear_weight=unclear_label_weight,
+        ),
+        0.0,
+    )
+    approval = approval_confidence > 0.0
+    disapproval = disapproval_confidence > 0.0
     crowd_chorus = _row_flag(row, "crowd_chorus") > 0
     no_crowd = _row_flag(row, NEGATIVE_CROWD_LABEL) > 0
 
@@ -132,29 +148,19 @@ def weak_row_to_targets(row: pd.Series) -> WeakBagTargets:
     event_mask = 0.0 if contradictory_event or (not event_positive and not no_crowd) else 1.0
     event_target = (1.0,) if event_positive and not contradictory_event else (0.0,)
 
-    polarity_mask = 1.0 if approval != disapproval and (approval or disapproval) else 0.0
-    if approval and not disapproval:
-        polarity_target = (1.0, 0.0)
-    elif disapproval and not approval:
-        polarity_target = (0.0, 1.0)
-    else:
-        polarity_target = (0.0, 0.0)
-
-    clarity_mask = 1.0 if clear != unclear and (clear or unclear) else 0.0
-    if clear and not unclear:
-        clarity_target = (1.0, 0.0)
-    elif unclear and not clear:
-        clarity_target = (0.0, 1.0)
-    else:
-        clarity_target = (0.0, 0.0)
+    attribute_mask = 0.0 if no_crowd or crowd_chorus or not event_positive else max(approval_confidence, disapproval_confidence)
+    approval_target = (1.0 if approval else 0.0,)
+    disapproval_target = (1.0 if disapproval else 0.0,)
+    approval_mask = approval_confidence if approval else attribute_mask
+    disapproval_mask = disapproval_confidence if disapproval else attribute_mask
 
     return WeakBagTargets(
         event_target=event_target,
         event_mask=event_mask,
-        polarity_target=polarity_target,
-        polarity_mask=polarity_mask,
-        clarity_target=clarity_target,
-        clarity_mask=clarity_mask,
+        approval_target=approval_target,
+        approval_mask=approval_mask,
+        disapproval_target=disapproval_target,
+        disapproval_mask=disapproval_mask,
     )
 
 
@@ -315,6 +321,9 @@ def build_split_records(
     weak_labels_csv: str,
     strong_labels_dir: str,
     original_audio_dir: str,
+    negative_data_dir: str | None = None,
+    chunk_sec: float = 20.0,
+    unclear_label_weight: float = 0.5,
 ) -> SplitDatasets:
     audio_info_index = _build_audio_info_index(audios_info_csv)
     original_audio_index = _build_original_audio_index(original_audio_dir)
@@ -352,7 +361,7 @@ def build_split_records(
             raise ValueError(f"Weak row source file {source_file} does not match any original audio file")
 
         speech_id = audio_path.stem
-        targets = weak_row_to_targets(pd.Series(row._asdict()))
+        targets = weak_row_to_targets(pd.Series(row._asdict()), unclear_label_weight=unclear_label_weight)
         split = "val" if _infer_validation_key(source_key, audio_info_index=audio_info_index, strong_txt_by_key=strong_txt_by_key) else "train"
         record = WeakChunkRecord(
             audio_path=str(audio_path),
@@ -367,6 +376,34 @@ def build_split_records(
             validation_speech_ids[source_key] = audio_path
         else:
             train_records.append(record)
+
+    if negative_data_dir:
+        negative_dir = Path(negative_data_dir)
+        if negative_dir.exists():
+            negative_targets = weak_row_to_targets(
+                pd.Series(
+                    {
+                        "clear_disapproval": 0,
+                        "unclear_disapproval": 0,
+                        "unclear_approval": 0,
+                        "clear_approval": 0,
+                        "no_crowd": 1,
+                        "crowd_chorus": 0,
+                    }
+                ),
+                unclear_label_weight=unclear_label_weight,
+            )
+            for audio_path in sorted(negative_dir.glob("*.wav")):
+                train_records.append(
+                    WeakChunkRecord(
+                        audio_path=str(audio_path.resolve()),
+                        speech_id=audio_path.stem,
+                        chunk_start_sec=0.0,
+                        chunk_end_sec=float(chunk_sec),
+                        targets=negative_targets,
+                        split="train",
+                    )
+                )
 
     strong_events: list[StrongEvent] = []
     for source_key, audio_path in validation_speech_ids.items():
@@ -426,10 +463,10 @@ class WeakChunkDataset(torch.utils.data.Dataset):
         targets = {
             "event_target": torch.tensor(record.targets.event_target, dtype=torch.float32),
             "event_mask": torch.tensor(record.targets.event_mask, dtype=torch.float32),
-            "polarity_target": torch.tensor(record.targets.polarity_target, dtype=torch.float32),
-            "polarity_mask": torch.tensor(record.targets.polarity_mask, dtype=torch.float32),
-            "clarity_target": torch.tensor(record.targets.clarity_target, dtype=torch.float32),
-            "clarity_mask": torch.tensor(record.targets.clarity_mask, dtype=torch.float32),
+            "approval_target": torch.tensor(record.targets.approval_target, dtype=torch.float32),
+            "approval_mask": torch.tensor(record.targets.approval_mask, dtype=torch.float32),
+            "disapproval_target": torch.tensor(record.targets.disapproval_target, dtype=torch.float32),
+            "disapproval_mask": torch.tensor(record.targets.disapproval_mask, dtype=torch.float32),
         }
         return {
             "waveform": chunk,
@@ -451,10 +488,10 @@ def collate_batch(batch: list[dict[str, Any]]) -> dict[str, Any]:
         "targets": {
             "event_target": torch.stack([item["targets"]["event_target"] for item in batch], dim=0),
             "event_mask": torch.stack([item["targets"]["event_mask"] for item in batch], dim=0),
-            "polarity_target": torch.stack([item["targets"]["polarity_target"] for item in batch], dim=0),
-            "polarity_mask": torch.stack([item["targets"]["polarity_mask"] for item in batch], dim=0),
-            "clarity_target": torch.stack([item["targets"]["clarity_target"] for item in batch], dim=0),
-            "clarity_mask": torch.stack([item["targets"]["clarity_mask"] for item in batch], dim=0),
+            "approval_target": torch.stack([item["targets"]["approval_target"] for item in batch], dim=0),
+            "approval_mask": torch.stack([item["targets"]["approval_mask"] for item in batch], dim=0),
+            "disapproval_target": torch.stack([item["targets"]["disapproval_target"] for item in batch], dim=0),
+            "disapproval_mask": torch.stack([item["targets"]["disapproval_mask"] for item in batch], dim=0),
         },
         "labels": torch.stack([item["labels"] for item in batch], dim=0),
         "speech_id": [item["speech_id"] for item in batch],

@@ -31,13 +31,11 @@ PLOTTED_LABEL_ORDER = [
     "relevant_event",
     "approval",
     "disapproval",
-    "clear",
-    "unclear",
 ]
 TASK_EXPORT_SPECS = {
     "event": ["relevant_event"],
-    "polarity": ["approval", "disapproval"],
-    "clarity": ["clear", "unclear"],
+    "approval": ["approval"],
+    "disapproval": ["disapproval"],
 }
 PREDICTION_COLORS = {
     "relevant_event": "#ff9896",
@@ -46,8 +44,6 @@ SCORE_LINE_COLORS = {
     "relevant_event": "#ff4d4d",
     "approval": "#2ca02c",
     "disapproval": "#d62728",
-    "clear": "#1f77b4",
-    "unclear": "#ff7f0e",
 }
 GROUND_TRUTH_LABEL_COLORS = {
     "clear_disapproval": "#d62728",
@@ -189,11 +185,21 @@ def predicted_regions_from_probs(
     if predicted_probs.shape[1] != len(label_names):
         raise ValueError("predicted_probs second dimension must match label_names")
     predicted_binary = (predicted_probs >= threshold).astype(np.int64)
+    if "relevant_event" in label_names:
+        event_index = label_names.index("relevant_event")
+        event_active = predicted_binary[:, event_index].astype(bool)
+        for gated_label in ("approval", "disapproval"):
+            if gated_label in label_names:
+                gated_index = label_names.index(gated_label)
+                predicted_binary[:, gated_index] = np.logical_and(
+                    event_active,
+                    predicted_binary[:, gated_index].astype(bool),
+                ).astype(np.int64)
     regions: list[tuple[float, float, str]] = []
     for class_index, label in enumerate(label_names):
         for onset_sec, offset_sec in contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
             regions.append((float(onset_sec), float(offset_sec), label))
-    return regions
+    return sorted(regions, key=lambda item: (item[0], item[1], item[2]))
 
 
 def write_sonic_visualiser_regions(output_path: Path, regions: list[tuple[float, float, str]]) -> None:
@@ -491,6 +497,7 @@ def main() -> None:
         weak_labels_csv=config["data"]["weak_labels_csv"],
         strong_labels_dir=config["data"]["strong_labels_dir"],
         original_audio_dir=config["data"]["original_audio_dir"],
+        unclear_label_weight=float(config.get("loss", {}).get("unclear_label_weight", 0.5)),
     )
     strong_text_index = build_strong_text_index(config["data"]["strong_labels_dir"])
     val_loader = build_val_loader(config, split_data.val_records)

@@ -10,8 +10,8 @@ from torch.nn import functional as F
 
 TASK_OUTPUT_DIMS = {
     "event": 1,
-    "polarity": 2,
-    "clarity": 2,
+    "approval": 1,
+    "disapproval": 1,
 }
 
 
@@ -139,7 +139,7 @@ class CrowdReactionModel(nn.Module):
     @staticmethod
     def _resolve_enabled_tasks(tasks_config: dict[str, dict[str, bool]] | None) -> tuple[str, ...]:
         enabled = ["event"]
-        for task_name in ("polarity", "clarity"):
+        for task_name in ("approval", "disapproval"):
             task_cfg = (tasks_config or {}).get(task_name, {})
             if bool(task_cfg.get("enabled", True)):
                 enabled.append(task_name)
