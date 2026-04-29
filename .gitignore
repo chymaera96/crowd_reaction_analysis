@@ -2,3 +2,6 @@ __pycache__/
 .pytest_cache/
 *.pyc
 data/
+tc1/
+tc2/
+tc3/
