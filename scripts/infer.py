@@ -38,12 +38,11 @@ TASK_EXPORT_SPECS = {
     "disapproval": ["disapproval"],
 }
 PREDICTION_COLORS = {
-    "relevant_event": "#ff9896",
+    "approval": "#2ca02c",
+    "disapproval": "#d62728",
 }
 SCORE_LINE_COLORS = {
     "relevant_event": "#ff4d4d",
-    "approval": "#2ca02c",
-    "disapproval": "#d62728",
 }
 GROUND_TRUTH_LABEL_COLORS = {
     "clear_disapproval": "#d62728",
@@ -161,18 +160,21 @@ def format_seconds_mmss(value: float, _pos: float | None = None) -> str:
 
 
 def regions_from_annotations(annotations: dict[str, list[tuple[float, float]]]) -> list[tuple[float, float, str]]:
+    export_label_map = {
+        "clear_approval": "approval",
+        "unclear_approval": "approval",
+        "clear_disapproval": "disapproval",
+        "unclear_disapproval": "disapproval",
+    }
     regions: list[tuple[float, float, str]] = []
     for label in GROUND_TRUTH_LABEL_ORDER:
-        for onset_sec, offset_sec in annotations.get(label, []):
-            regions.append((float(onset_sec), float(offset_sec), label))
-
-    seen_labels = set(GROUND_TRUTH_LABEL_ORDER)
-    for label in sorted(annotations):
-        if label in seen_labels:
+        export_label = export_label_map.get(label)
+        if export_label is None:
             continue
-        for onset_sec, offset_sec in annotations[label]:
-            regions.append((float(onset_sec), float(offset_sec), label))
-    return regions
+        for onset_sec, offset_sec in annotations.get(label, []):
+            regions.append((float(onset_sec), float(offset_sec), export_label))
+
+    return sorted(regions, key=lambda item: (item[0], item[1], item[2]))
 
 
 def predicted_regions_from_probs(
@@ -181,6 +183,7 @@ def predicted_regions_from_probs(
     label_names: list[str],
     threshold: float,
     instance_sec: float,
+    export_labels: tuple[str, ...] = ("approval", "disapproval"),
 ) -> list[tuple[float, float, str]]:
     if predicted_probs.shape[1] != len(label_names):
         raise ValueError("predicted_probs second dimension must match label_names")
@@ -196,10 +199,18 @@ def predicted_regions_from_probs(
                     predicted_binary[:, gated_index].astype(bool),
                 ).astype(np.int64)
     regions: list[tuple[float, float, str]] = []
+    export_label_set = set(export_labels)
     for class_index, label in enumerate(label_names):
+        if label not in export_label_set:
+            continue
         for onset_sec, offset_sec in contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
             regions.append((float(onset_sec), float(offset_sec), label))
     return sorted(regions, key=lambda item: (item[0], item[1], item[2]))
+
+
+def probability_to_logit(probabilities: np.ndarray) -> np.ndarray:
+    clipped = np.clip(probabilities.astype(np.float64), 1e-6, 1.0 - 1e-6)
+    return np.log(clipped / (1.0 - clipped))
 
 
 def write_sonic_visualiser_regions(output_path: Path, regions: list[tuple[float, float, str]]) -> None:
@@ -365,7 +376,7 @@ def draw_intervals(
 def overlay_events(
     ax: plt.Axes,
     *,
-    predicted_event_bins: np.ndarray,
+    predicted_regions: list[tuple[float, float, str]],
     ground_truth_annotations: dict[str, list[tuple[float, float]]],
     instance_sec: float,
 ) -> None:
@@ -391,17 +402,21 @@ def overlay_events(
         )
         current_band += 1
 
-    top = base - current_band * (band_height + gap)
-    pred_bottom = max(0.0, top - band_height)
-    pred_intervals = contiguous_regions(predicted_event_bins.astype(np.int64), instance_sec=instance_sec)
-    draw_intervals(
-        ax,
-        pred_intervals,
-        y_min=pred_bottom,
-        y_max=top,
-        color=PREDICTION_COLORS["relevant_event"],
-        label="Pred relevant_event",
-    )
+    for label in ("approval", "disapproval"):
+        pred_intervals = [(onset_sec, offset_sec) for onset_sec, offset_sec, region_label in predicted_regions if region_label == label]
+        if not pred_intervals:
+            continue
+        top = base - current_band * (band_height + gap)
+        pred_bottom = max(0.0, top - band_height)
+        draw_intervals(
+            ax,
+            pred_intervals,
+            y_min=pred_bottom,
+            y_max=top,
+            color=PREDICTION_COLORS[label],
+            label=f"Pred {label}",
+        )
+        current_band += 1
 
 
 def plot_speech(
@@ -409,6 +424,7 @@ def plot_speech(
     audio_path: str,
     speech_id: str,
     predicted_probs: np.ndarray,
+    predicted_regions: list[tuple[float, float, str]],
     label_names: list[str],
     ground_truth_annotations: dict[str, list[tuple[float, float]]],
     sample_rate: int,
@@ -438,10 +454,9 @@ def plot_speech(
     fig.colorbar(image, ax=ax, format="%+2.0f dB")
 
     event_index = label_names.index("relevant_event")
-    predicted_binary = (predicted_probs[:, event_index] >= threshold).astype(np.int64)
     overlay_events(
         ax,
-        predicted_event_bins=predicted_binary,
+        predicted_regions=predicted_regions,
         ground_truth_annotations=ground_truth_annotations,
         instance_sec=instance_sec,
     )
@@ -449,18 +464,31 @@ def plot_speech(
     score_ax = ax.twinx()
     num_steps = predicted_probs.shape[0]
     centers = (np.arange(num_steps, dtype=np.float32) + 0.5) * float(instance_sec)
-    for class_index, label_name in enumerate(label_names):
-        score_ax.plot(
-            centers,
-            predicted_probs[:, class_index],
-            color=SCORE_LINE_COLORS[label_name],
-            linewidth=1.75,
-            alpha=0.95,
-            drawstyle="steps-mid",
-            label=f"Score {label_name}",
-        )
-    score_ax.set_ylim(0.0, 1.0)
-    score_ax.set_ylabel("Predicted probability")
+    event_logits = probability_to_logit(predicted_probs[:, event_index])
+    score_ax.plot(
+        centers,
+        event_logits,
+        color=SCORE_LINE_COLORS["relevant_event"],
+        linewidth=1.75,
+        alpha=0.95,
+        drawstyle="steps-mid",
+        label="Logit relevant_event",
+    )
+    score_ax.axhline(
+        float(probability_to_logit(np.array([threshold]))[0]),
+        color=SCORE_LINE_COLORS["relevant_event"],
+        linestyle="--",
+        linewidth=1.0,
+        alpha=0.55,
+        label="Event threshold",
+    )
+    finite_logits = event_logits[np.isfinite(event_logits)]
+    if finite_logits.size:
+        y_min = min(float(finite_logits.min()), float(probability_to_logit(np.array([threshold]))[0]))
+        y_max = max(float(finite_logits.max()), float(probability_to_logit(np.array([threshold]))[0]))
+        y_pad = max(0.5, 0.1 * (y_max - y_min))
+        score_ax.set_ylim(y_min - y_pad, y_max + y_pad)
+    score_ax.set_ylabel("Relevant event logit")
     score_ax.grid(False)
 
     ax.set_title(f"{truncate_plot_title(speech_id)} | threshold={threshold:.2f}")
@@ -551,6 +579,7 @@ def main() -> None:
             audio_path=record.audio_path,
             speech_id=speech_id,
             predicted_probs=pred_pad,
+            predicted_regions=predicted_regions,
             label_names=label_names,
             ground_truth_annotations=ground_truth_annotations,
             sample_rate=int(config["data"]["sample_rate"]),

@@ -145,20 +145,16 @@ def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
 
     assert regions == [
         (1.0, 3.0, "approval"),
-        (1.0, 3.0, "relevant_event"),
         (2.0, 3.0, "disapproval"),
         (4.0, 5.0, "disapproval"),
-        (4.0, 5.0, "relevant_event"),
     ]
 
     output_path = tmp_path / "predicted.csv"
     infer_module.write_sonic_visualiser_regions(output_path, regions)
     assert output_path.read_text(encoding="utf-8") == (
         "1.000000,2.000000,approval\n"
-        "1.000000,2.000000,relevant_event\n"
         "2.000000,1.000000,disapproval\n"
         "4.000000,1.000000,disapproval\n"
-        "4.000000,1.000000,relevant_event\n"
     )
 
 
@@ -205,6 +201,25 @@ def test_infer_aggregate_multitask_probs_flattens_task_outputs() -> None:
             dtype=np.float32,
         ),
     )
+
+
+def test_infer_ground_truth_regions_export_only_approval_disapproval() -> None:
+    regions = infer_module.regions_from_annotations(
+        {
+            "clear_approval": [(0.0, 1.0)],
+            "unclear_approval": [(2.0, 3.0)],
+            "clear_disapproval": [(4.0, 5.0)],
+            "unclear_disapproval": [(6.0, 7.0)],
+            "crowd_chorus": [(8.0, 9.0)],
+        }
+    )
+
+    assert regions == [
+        (0.0, 1.0, "approval"),
+        (2.0, 3.0, "approval"),
+        (4.0, 5.0, "disapproval"),
+        (6.0, 7.0, "disapproval"),
+    ]
 
 
 def test_infer_formats_time_as_mmss() -> None:
