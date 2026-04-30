@@ -77,6 +77,38 @@ class FrozenBEATsFeatureExtractor(nn.Module):
         return pooled.view(batch, steps, self.output_dim)
 
 
+class FrozenWav2Vec2FeatureExtractor(nn.Module):
+    def __init__(self, model_name: str = "facebook/wav2vec2-base") -> None:
+        super().__init__()
+        try:
+            from transformers import Wav2Vec2Model
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "Wav2Vec2 encoder requires the `transformers` package. "
+                "Install project dependencies before using model.encoder_type=wav2vec2."
+            ) from exc
+
+        self.encoder = Wav2Vec2Model.from_pretrained(model_name)
+        self.output_dim = int(self.encoder.config.hidden_size)
+
+        for parameter in self.encoder.parameters():
+            parameter.requires_grad = False
+        self.encoder.eval()
+
+    def train(self, mode: bool = True):
+        super().train(mode)
+        self.encoder.eval()
+        return self
+
+    def forward(self, instances: torch.Tensor) -> torch.Tensor:
+        batch, steps, samples = instances.shape
+        waveform = instances.reshape(batch, steps * samples)
+        with torch.no_grad():
+            features = self.encoder(waveform).last_hidden_state
+            pooled = F.adaptive_avg_pool1d(features.transpose(1, 2), output_size=steps).transpose(1, 2)
+        return pooled
+
+
 class TemporalClassifierHead(nn.Module):
     def __init__(self, input_dim: int, num_classes: int, hidden_dim: int = 256, dropout: float = 0.1) -> None:
         super().__init__()
@@ -104,7 +136,9 @@ class CrowdReactionModel(nn.Module):
         self,
         *,
         feature_extractor: FeatureExtractor | None = None,
+        encoder_type: str = "beats",
         beats_checkpoint_path: str | None = None,
+        wav2vec2_model_name: str = "facebook/wav2vec2-base",
         head_hidden_dim: int = 256,
         head_dropout: float = 0.1,
         sample_rate: int = 16000,
@@ -114,9 +148,15 @@ class CrowdReactionModel(nn.Module):
     ) -> None:
         super().__init__()
         if feature_extractor is None:
-            if beats_checkpoint_path is None:
-                raise ValueError("beats_checkpoint_path is required when feature_extractor is not provided")
-            feature_extractor = FrozenBEATsFeatureExtractor(beats_checkpoint_path)
+            encoder_type = str(encoder_type).strip().lower()
+            if encoder_type == "beats":
+                if beats_checkpoint_path is None:
+                    raise ValueError("beats_checkpoint_path is required when encoder_type='beats'")
+                feature_extractor = FrozenBEATsFeatureExtractor(beats_checkpoint_path)
+            elif encoder_type == "wav2vec2":
+                feature_extractor = FrozenWav2Vec2FeatureExtractor(wav2vec2_model_name)
+            else:
+                raise ValueError(f"Unsupported encoder_type: {encoder_type}")
         self.feature_extractor = feature_extractor
         self.sample_rate = int(sample_rate)
         self.chunk_sec = float(chunk_sec)

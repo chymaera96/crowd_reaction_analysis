@@ -303,7 +303,9 @@ def active_label_order(chunk_predictions_by_task: dict[str, list[SpeechChunkPred
 
 def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.device) -> CrowdReactionModel:
     model = CrowdReactionModel(
-        beats_checkpoint_path=config["model"]["beats_checkpoint_path"],
+        encoder_type=config["model"].get("encoder_type", "beats"),
+        beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
+        wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),

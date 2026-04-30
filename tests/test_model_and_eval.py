@@ -20,6 +20,16 @@ infer_module = importlib.util.module_from_spec(_INFER_SPEC)
 _INFER_SPEC.loader.exec_module(infer_module)
 
 
+class DummyWav2Vec2StyleFeatureExtractor(torch.nn.Module):
+    def __init__(self, output_dim: int = 8) -> None:
+        super().__init__()
+        self.output_dim = int(output_dim)
+        self.proj = torch.nn.Linear(1, self.output_dim)
+
+    def forward(self, instances: torch.Tensor) -> torch.Tensor:
+        return self.proj(instances.mean(dim=-1, keepdim=True))
+
+
 def test_mmm_loss_matches_manual_negative_case() -> None:
     logits = torch.zeros((1, 2, 1), dtype=torch.float32)
     labels = torch.zeros((1, 1), dtype=torch.float32)
@@ -123,6 +133,28 @@ def test_synthetic_one_step_training_smoke() -> None:
     assert outputs.instance_logits["approval"].shape == (3, 20, 1)
     assert outputs.instance_logits["disapproval"].shape == (3, 20, 1)
     assert float(loss.detach().item()) > 0.0
+
+
+def test_wav2vec2_style_feature_extractor_supports_two_hz_bins() -> None:
+    extractor = DummyWav2Vec2StyleFeatureExtractor(output_dim=8)
+    instances = torch.randn(2, 40, 8000)
+    embeddings = extractor(instances)
+
+    assert embeddings.shape == (2, 40, 8)
+
+
+def test_model_with_wav2vec2_style_features_outputs_two_hz_logits() -> None:
+    model = CrowdReactionModel(
+        feature_extractor=DummyWav2Vec2StyleFeatureExtractor(output_dim=8),
+        chunk_sec=20.0,
+        instance_sec=0.5,
+    )
+
+    outputs = model(instances=torch.randn(2, 40, 8000))
+
+    assert outputs.instance_logits["event"].shape == (2, 40, 1)
+    assert outputs.instance_logits["approval"].shape == (2, 40, 1)
+    assert outputs.instance_logits["disapproval"].shape == (2, 40, 1)
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:

@@ -263,7 +263,9 @@ def main() -> None:
     val_loader = build_dataloader(config["data"], config["val"], split_datasets.val_records, shuffle=False)
 
     model = CrowdReactionModel(
-        beats_checkpoint_path=config["model"]["beats_checkpoint_path"],
+        encoder_type=config["model"].get("encoder_type", "beats"),
+        beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
+        wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),

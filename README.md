@@ -1,7 +1,7 @@
 # crowd_reaction_analysis
 Base repository for analysis of crowd reactions in political speeches.
 
-This repo includes a PyTorch training package for weakly supervised sound event detection on 20 second speech chunks, using a frozen BEATs encoder and multi-instance learning heads for `crowd`, `approval`, and `disapproval`.
+This repo includes a PyTorch training package for weakly supervised sound event detection on 20 second speech chunks, using frozen BEATs or wav2vec2 encoders and multi-instance learning heads for `crowd`, `approval`, and `disapproval`.
 
 ## Setup
 
@@ -17,9 +17,10 @@ If you want Weights & Biases logging:
 
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
+- `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_2hz --wandb-mode disabled`
 - `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_val.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
-- `src/crowd_reaction/model.py` for frozen BEATs + temporal classifier head
+- `src/crowd_reaction/model.py` for frozen BEATs/wav2vec2 + temporal classifier heads
 - `src/crowd_reaction/eval.py` for weak metrics plus `sed_eval`-based segment and event validation
 
 Dataset inputs:
@@ -48,6 +49,10 @@ Weak targets:
 - `crowd_chorus` trains only `event`
 - approval/disapproval are masked for `no_crowd` because they are immaterial when no event is present
 - `hard_annotation` is ignored for target construction
+
+Encoder configs:
+- `configs/default.yaml` uses frozen BEATs with `data.instance_sec: 1.0`
+- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with `data.instance_sec: 0.5`, producing 2 Hz logits
 
 Strong validation uses `sed_eval`:
 - all strong crowd-like labels collapse to a single positive `crowd` event class
