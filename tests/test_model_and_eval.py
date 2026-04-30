@@ -139,7 +139,8 @@ def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
     regions = infer_module.predicted_regions_from_probs(
         probs,
         label_names=["relevant_event", "approval", "disapproval"],
-        threshold=0.5,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
         instance_sec=1.0,
     )
 

@@ -54,5 +54,7 @@ val:
   batch_size: 4
   num_workers: 0
   threshold: 0.5
+  event_threshold: 0.1824255238
+  attribute_threshold: 0.5
   event_collar_sec: 1.0
   event_offset_ratio: 0.2

@@ -62,5 +62,6 @@ Checkpoint outputs:
 Inference plots:
 - `scripts/infer.py` runs the trained model over the strong-labeled validation files
 - it saves one PNG per file with a spectrogram background, raw ground-truth strong spans, and prediction score curves for `relevant_event`, `approval`, and `disapproval`
+- the default event threshold is `sigmoid(-1.5)`, about `0.182`; approval/disapproval use `val.attribute_threshold`
 - exported approval/disapproval regions are hard-gated by the `relevant_event` threshold
 - if W&B is enabled or `--wandb-mode` / `--run-id` are passed, the saved images are also logged to W&B

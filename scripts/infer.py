@@ -43,7 +43,10 @@ PREDICTION_COLORS = {
 }
 SCORE_LINE_COLORS = {
     "relevant_event": "#ff4d4d",
+    "approval": "#2ca02c",
+    "disapproval": "#d62728",
 }
+DEFAULT_EVENT_LOGIT_THRESHOLD = -1.5
 GROUND_TRUTH_LABEL_COLORS = {
     "clear_disapproval": "#d62728",
     "unclear_disapproval": "#ff7f0e",
@@ -65,7 +68,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--checkpoint", required=True, help="Path to trained model checkpoint (e.g. best_val.pt)")
     parser.add_argument("--output-dir", required=True, help="Directory to save inference plots")
-    parser.add_argument("--threshold", type=float, default=None, help="Override detection threshold")
+    parser.add_argument("--threshold", type=float, default=None, help="Override event detection probability threshold")
+    parser.add_argument(
+        "--attribute-threshold",
+        type=float,
+        default=None,
+        help="Override approval/disapproval probability threshold",
+    )
     parser.add_argument("--batch-size", type=int, default=None, help="Override validation batch size for inference")
     parser.add_argument("--run-id", default=None, help="Optional W&B run id for inference logging")
     parser.add_argument(
@@ -159,6 +168,10 @@ def format_seconds_mmss(value: float, _pos: float | None = None) -> str:
     return f"{minutes:02d}:{seconds:02d}"
 
 
+def sigmoid(value: float) -> float:
+    return float(1.0 / (1.0 + math.exp(-float(value))))
+
+
 def regions_from_annotations(annotations: dict[str, list[tuple[float, float]]]) -> list[tuple[float, float, str]]:
     export_label_map = {
         "clear_approval": "approval",
@@ -181,13 +194,17 @@ def predicted_regions_from_probs(
     predicted_probs: np.ndarray,
     *,
     label_names: list[str],
-    threshold: float,
+    event_threshold: float,
+    attribute_threshold: float,
     instance_sec: float,
     export_labels: tuple[str, ...] = ("approval", "disapproval"),
 ) -> list[tuple[float, float, str]]:
     if predicted_probs.shape[1] != len(label_names):
         raise ValueError("predicted_probs second dimension must match label_names")
-    predicted_binary = (predicted_probs >= threshold).astype(np.int64)
+    predicted_binary = np.zeros_like(predicted_probs, dtype=np.int64)
+    for class_index, label in enumerate(label_names):
+        threshold = event_threshold if label == "relevant_event" else attribute_threshold
+        predicted_binary[:, class_index] = (predicted_probs[:, class_index] >= threshold).astype(np.int64)
     if "relevant_event" in label_names:
         event_index = label_names.index("relevant_event")
         event_active = predicted_binary[:, event_index].astype(bool)
@@ -206,11 +223,6 @@ def predicted_regions_from_probs(
         for onset_sec, offset_sec in contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
             regions.append((float(onset_sec), float(offset_sec), label))
     return sorted(regions, key=lambda item: (item[0], item[1], item[2]))
-
-
-def probability_to_logit(probabilities: np.ndarray) -> np.ndarray:
-    clipped = np.clip(probabilities.astype(np.float64), 1e-6, 1.0 - 1e-6)
-    return np.log(clipped / (1.0 - clipped))
 
 
 def write_sonic_visualiser_regions(output_path: Path, regions: list[tuple[float, float, str]]) -> None:
@@ -357,6 +369,7 @@ def draw_intervals(
     y_max: float,
     color: str,
     label: str | None,
+    alpha: float = 0.9,
 ) -> None:
     label_used = False
     for onset_sec, offset_sec in intervals:
@@ -366,7 +379,7 @@ def draw_intervals(
             ymin=y_min,
             ymax=y_max,
             color=color,
-            alpha=0.9,
+            alpha=alpha,
             linewidth=0,
             label=label if not label_used else None,
         )
@@ -415,6 +428,7 @@ def overlay_events(
             y_max=top,
             color=PREDICTION_COLORS[label],
             label=f"Pred {label}",
+            alpha=0.35,
         )
         current_band += 1
 
@@ -429,7 +443,8 @@ def plot_speech(
     ground_truth_annotations: dict[str, list[tuple[float, float]]],
     sample_rate: int,
     instance_sec: float,
-    threshold: float,
+    event_threshold: float,
+    attribute_threshold: float,
     output_path: Path,
 ) -> None:
     waveform, sr = torchaudio.load(audio_path)
@@ -464,34 +479,43 @@ def plot_speech(
     score_ax = ax.twinx()
     num_steps = predicted_probs.shape[0]
     centers = (np.arange(num_steps, dtype=np.float32) + 0.5) * float(instance_sec)
-    event_logits = probability_to_logit(predicted_probs[:, event_index])
-    score_ax.plot(
-        centers,
-        event_logits,
-        color=SCORE_LINE_COLORS["relevant_event"],
-        linewidth=1.75,
-        alpha=0.95,
-        drawstyle="steps-mid",
-        label="Logit relevant_event",
-    )
+    for label_name in ("relevant_event", "approval", "disapproval"):
+        if label_name not in label_names:
+            continue
+        class_index = label_names.index(label_name)
+        linewidth = 1.75 if label_name == "relevant_event" else 1.25
+        score_ax.plot(
+            centers,
+            predicted_probs[:, class_index],
+            color=SCORE_LINE_COLORS[label_name],
+            linewidth=linewidth,
+            alpha=0.95,
+            drawstyle="steps-mid",
+            label=f"Score {label_name}",
+        )
     score_ax.axhline(
-        float(probability_to_logit(np.array([threshold]))[0]),
+        event_threshold,
         color=SCORE_LINE_COLORS["relevant_event"],
         linestyle="--",
         linewidth=1.0,
         alpha=0.55,
         label="Event threshold",
     )
-    finite_logits = event_logits[np.isfinite(event_logits)]
-    if finite_logits.size:
-        y_min = min(float(finite_logits.min()), float(probability_to_logit(np.array([threshold]))[0]))
-        y_max = max(float(finite_logits.max()), float(probability_to_logit(np.array([threshold]))[0]))
-        y_pad = max(0.5, 0.1 * (y_max - y_min))
-        score_ax.set_ylim(y_min - y_pad, y_max + y_pad)
-    score_ax.set_ylabel("Relevant event logit")
+    score_ax.axhline(
+        attribute_threshold,
+        color="#444444",
+        linestyle=":",
+        linewidth=1.0,
+        alpha=0.65,
+        label="Approval/disapproval threshold",
+    )
+    score_ax.set_ylim(0.0, 1.0)
+    score_ax.set_ylabel("Predicted probability")
     score_ax.grid(False)
 
-    ax.set_title(f"{truncate_plot_title(speech_id)} | threshold={threshold:.2f}")
+    ax.set_title(
+        f"{truncate_plot_title(speech_id)} | event={event_threshold:.2f} | attr={attribute_threshold:.2f}"
+    )
     ax.set_xlabel("Time (mm:ss)")
     ax.set_ylabel("Frequency (Hz)")
     ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
@@ -515,7 +539,16 @@ def main() -> None:
     if args.batch_size is not None:
         config["val"]["batch_size"] = int(args.batch_size)
 
-    threshold = float(args.threshold) if args.threshold is not None else float(config["val"].get("threshold", 0.5))
+    event_threshold = (
+        float(args.threshold)
+        if args.threshold is not None
+        else float(config["val"].get("event_threshold", sigmoid(DEFAULT_EVENT_LOGIT_THRESHOLD)))
+    )
+    attribute_threshold = (
+        float(args.attribute_threshold)
+        if args.attribute_threshold is not None
+        else float(config["val"].get("attribute_threshold", config["val"].get("threshold", 0.5)))
+    )
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     wandb_run = init_wandb(config, output_dir, run_id=args.run_id, wandb_mode=args.wandb_mode)
     wandb_module = get_wandb_module_if_needed(wandb_run)
@@ -566,7 +599,8 @@ def main() -> None:
         predicted_regions = predicted_regions_from_probs(
             pred_pad,
             label_names=label_names,
-            threshold=threshold,
+            event_threshold=event_threshold,
+            attribute_threshold=attribute_threshold,
             instance_sec=float(config["data"]["instance_sec"]),
         )
         ground_truth_regions = regions_from_annotations(ground_truth_annotations)
@@ -584,7 +618,8 @@ def main() -> None:
             ground_truth_annotations=ground_truth_annotations,
             sample_rate=int(config["data"]["sample_rate"]),
             instance_sec=float(config["data"]["instance_sec"]),
-            threshold=threshold,
+            event_threshold=event_threshold,
+            attribute_threshold=attribute_threshold,
             output_path=output_path,
         )
         write_sonic_visualiser_regions(predicted_annotation_path, predicted_regions)
