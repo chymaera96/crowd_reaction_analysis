@@ -93,6 +93,7 @@ def normalize_name(value: str) -> str:
         }
     )
     normalized = normalized.translate(translation)
+    normalized = re.sub(r"[^\x00-\x7F]+", "", normalized)
     normalized = unicodedata.normalize("NFKD", normalized)
     normalized = normalized.encode("ascii", "ignore").decode("ascii")
     normalized = normalized.lower()
@@ -151,8 +152,12 @@ def weak_row_to_targets(row: pd.Series, *, unclear_label_weight: float = 0.5) ->
     attribute_mask = 0.0 if no_crowd or crowd_chorus or not event_positive else max(approval_confidence, disapproval_confidence)
     approval_target = (1.0 if approval else 0.0,)
     disapproval_target = (1.0 if disapproval else 0.0,)
-    approval_mask = approval_confidence if approval else attribute_mask
-    disapproval_mask = disapproval_confidence if disapproval else attribute_mask
+    if attribute_mask <= 0.0:
+        approval_mask = 0.0
+        disapproval_mask = 0.0
+    else:
+        approval_mask = approval_confidence if approval else attribute_mask
+        disapproval_mask = disapproval_confidence if disapproval else attribute_mask
 
     return WeakBagTargets(
         event_target=event_target,

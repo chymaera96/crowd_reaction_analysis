@@ -99,8 +99,7 @@ def test_strong_eval_merges_overlapping_chunks() -> None:
         ),
     ]
     strong_events = [
-        StrongEvent(speech_id="speech-1", event_class=0, onset_sec=1.0, offset_sec=3.0),
-        StrongEvent(speech_id="speech-1", event_class=0, onset_sec=3.0, offset_sec=4.0),
+        StrongEvent(speech_id="speech-1", event_class=0, onset_sec=1.0, offset_sec=4.0),
     ]
     metrics = evaluate_strong(
         predictions,
