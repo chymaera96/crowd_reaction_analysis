@@ -42,7 +42,7 @@ PREDICTION_COLORS = {
     "disapproval": "#d62728",
 }
 SCORE_LINE_COLORS = {
-    "relevant_event": "#ff4d4d",
+    "relevant_event": "#000000",
     "approval": "#2ca02c",
     "disapproval": "#d62728",
 }
