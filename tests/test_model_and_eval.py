@@ -349,6 +349,21 @@ def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
     )
 
 
+def test_infer_conditions_attribute_scores_by_event_probability() -> None:
+    probs_by_task = {
+        "event": np.array([[[0.2], [0.8]]], dtype=np.float32),
+        "approval": np.array([[[0.5], [0.5]]], dtype=np.float32),
+        "disapproval": np.array([[[0.25], [0.75]]], dtype=np.float32),
+    }
+
+    conditioned = infer_module.condition_attribute_probs_by_event(probs_by_task)
+
+    assert np.allclose(conditioned["event"], np.array([[[0.2], [0.8]]], dtype=np.float32))
+    assert np.allclose(conditioned["approval"], np.array([[[0.1], [0.4]]], dtype=np.float32))
+    assert np.allclose(conditioned["disapproval"], np.array([[[0.05], [0.6]]], dtype=np.float32))
+    assert np.allclose(probs_by_task["approval"], np.array([[[0.5], [0.5]]], dtype=np.float32))
+
+
 def test_infer_aggregate_multitask_probs_flattens_task_outputs() -> None:
     aggregated = infer_module.aggregate_multitask_probs(
         {

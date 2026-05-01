@@ -304,6 +304,17 @@ def write_prediction_diagnostics(output_path: Path, rows: list[dict[str, str]]) 
         writer.writerows(rows)
 
 
+def condition_attribute_probs_by_event(instance_probs_by_task: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
+    conditioned = dict(instance_probs_by_task)
+    event_probs = conditioned.get("event")
+    if event_probs is None:
+        return conditioned
+    for task_name in ("approval", "disapproval"):
+        if task_name in conditioned:
+            conditioned[task_name] = event_probs[:, :, :1] * conditioned[task_name]
+    return conditioned
+
+
 def collect_multitask_chunk_predictions(
     model: CrowdReactionModel,
     dataloader: DataLoader,
@@ -315,10 +326,15 @@ def collect_multitask_chunk_predictions(
         for batch in dataloader:
             instances = batch["instances"].to(device)
             outputs = model(instances=instances)
+            instance_probs_by_task = {
+                task_name: torch.sigmoid(task_logits).cpu().numpy()
+                for task_name, task_logits in outputs.instance_logits.items()
+            }
+            instance_probs_by_task = condition_attribute_probs_by_event(instance_probs_by_task)
             for task_name, label_names in TASK_EXPORT_SPECS.items():
-                if task_name not in outputs.instance_logits:
+                if task_name not in instance_probs_by_task:
                     continue
-                task_instance_probs = torch.sigmoid(outputs.instance_logits[task_name]).cpu().numpy()
+                task_instance_probs = instance_probs_by_task[task_name]
                 for batch_index in range(instances.shape[0]):
                     predictions_by_task[task_name].append(
                         SpeechChunkPrediction(
