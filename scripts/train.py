@@ -213,6 +213,60 @@ def flatten_metrics(metrics: dict[str, Any], prefix: str = "") -> dict[str, floa
     return flattened
 
 
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    score = float(value)
+    if not math.isfinite(score):
+        return None
+    return score
+
+
+def validation_score(metrics: dict[str, Any], metric_name: str) -> float:
+    strong = metrics.get("strong")
+    if strong is not None:
+        score = _finite_float(strong.get(metric_name))
+        if score is not None:
+            return score
+    return float(metrics["weak"]["event"]["macro_f1"])
+
+
+def _weak_task_metric(metrics: dict[str, Any], task_name: str, metric_name: str) -> float | None:
+    task_metrics = metrics["weak"].get(task_name)
+    if task_metrics is None:
+        return None
+    return _finite_float(task_metrics.get(f"macro_{metric_name}"))
+
+
+def wandb_validation_payload(metrics: dict[str, Any]) -> dict[str, float | int | None]:
+    payload: dict[str, float | int | None] = {
+        "epoch": int(metrics["epoch"]),
+        "train.loss": float(metrics["train_loss"]),
+        "train.event_loss": float(metrics["train_event_loss"]),
+        "train.approval_loss": metrics.get("train_approval_loss"),
+        "train.disapproval_loss": metrics.get("train_disapproval_loss"),
+    }
+    for task_name, label_name in (
+        ("event", "relevant_event"),
+        ("approval", "approval"),
+        ("disapproval", "disapproval"),
+    ):
+        payload[f"weak.{label_name}.precision"] = _weak_task_metric(metrics, task_name, "precision")
+        payload[f"weak.{label_name}.f1"] = _weak_task_metric(metrics, task_name, "f1")
+
+    strong = metrics.get("strong")
+    if strong is not None:
+        payload.update(
+            {
+                "strong.segment.precision": _finite_float(strong.get("segment_macro_precision")),
+                "strong.segment.f1": _finite_float(strong.get("segment_macro_f1")),
+                "strong.event.precision": _finite_float(strong.get("event_precision")),
+                "strong.event.f1": _finite_float(strong.get("event_f1")),
+            }
+        )
+    return {key: value for key, value in payload.items() if value is not None}
+
+
 def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, wandb_mode: str | None):
     wandb_config = config.get("wandb", {})
     enabled = bool(wandb_config.get("enabled", False)) or (wandb_mode is not None and wandb_mode != "disabled") or (run_id is not None)
@@ -239,15 +293,6 @@ def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, 
         config=config,
     )
     return run
-
-
-def best_validation_score(metrics: dict[str, Any]) -> float:
-    strong = metrics.get("strong")
-    if strong is not None:
-        score = float(strong["segment_macro_f1"])
-        if math.isfinite(score):
-            return score
-    return float(metrics["weak"]["event"]["macro_average_precision"])
 
 
 def main() -> None:
@@ -295,7 +340,8 @@ def main() -> None:
 
     task_class_weights = _task_class_weights(config.get("loss", {}), device)
 
-    best_val_score = float("-inf")
+    best_segment_f1 = float("-inf")
+    best_event_f1 = float("-inf")
     history = []
 
     for epoch in range(1, int(config["trainer"]["epochs"]) + 1):
@@ -350,11 +396,22 @@ def main() -> None:
             config=config,
         )
 
-        current_val_score = best_validation_score(metrics)
-        if current_val_score >= best_val_score:
-            best_val_score = current_val_score
+        segment_f1_score = validation_score(metrics, "segment_macro_f1")
+        event_f1_score = validation_score(metrics, "event_f1")
+        if segment_f1_score >= best_segment_f1:
+            best_segment_f1 = segment_f1_score
             save_checkpoint(
-                output_dir / "best_val.pt",
+                output_dir / "best_segment_f1.pt",
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                metrics=metrics,
+                config=config,
+            )
+        if event_f1_score >= best_event_f1:
+            best_event_f1 = event_f1_score
+            save_checkpoint(
+                output_dir / "best_event_f1.pt",
                 model=model,
                 optimizer=optimizer,
                 epoch=epoch,
@@ -374,26 +431,32 @@ def main() -> None:
                     "train_event_loss": metrics["train_event_loss"],
                     "train_approval_loss": metrics.get("train_approval_loss"),
                     "train_disapproval_loss": metrics.get("train_disapproval_loss"),
-                    "val_score": current_val_score,
-                    "weak_event_macro_ap": weak_event["macro_average_precision"],
+                    "val_segment_f1_score": segment_f1_score,
+                    "val_event_f1_score": event_f1_score,
+                    "weak_relevant_event_precision": weak_event["macro_precision"],
                     "weak_event_macro_f1": weak_event["macro_f1"],
-                    "weak_approval_macro_ap": None if weak_approval is None else weak_approval["macro_average_precision"],
-                    "weak_disapproval_macro_ap": None if weak_disapproval is None else weak_disapproval["macro_average_precision"],
+                    "weak_approval_precision": None if weak_approval is None else weak_approval["macro_precision"],
+                    "weak_approval_f1": None if weak_approval is None else weak_approval["macro_f1"],
+                    "weak_disapproval_precision": None if weak_disapproval is None else weak_disapproval["macro_precision"],
+                    "weak_disapproval_f1": None if weak_disapproval is None else weak_disapproval["macro_f1"],
+                    "strong_segment_macro_precision": None if strong is None else strong["segment_macro_precision"],
                     "strong_segment_macro_f1": None if strong is None else strong["segment_macro_f1"],
+                    "strong_event_precision": None if strong is None else strong["event_precision"],
                     "strong_event_f1": None if strong is None else strong["event_f1"],
                 }
             )
         )
         if wandb_run is not None:
-            wandb_run.log(flatten_metrics(metrics), step=epoch)
+            wandb_run.log(wandb_validation_payload(metrics), step=epoch)
 
     with open(output_dir / "history.json", "w", encoding="utf-8") as handle:
         json.dump(history, handle, indent=2)
 
     if wandb_run is not None:
-        wandb_run.summary["best_validation_score"] = best_val_score
+        wandb_run.summary["best_segment_f1"] = best_segment_f1
+        wandb_run.summary["best_event_f1"] = best_event_f1
         wandb_run.save(str(output_dir / "history.json"), policy="now")
-        for checkpoint_name in ("last.pt", "best_val.pt"):
+        for checkpoint_name in ("last.pt", "best_segment_f1.pt", "best_event_f1.pt"):
             checkpoint_path = output_dir / checkpoint_name
             if checkpoint_path.exists():
                 wandb_run.save(str(checkpoint_path), policy="now")

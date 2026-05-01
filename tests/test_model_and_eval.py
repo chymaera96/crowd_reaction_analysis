@@ -118,7 +118,58 @@ def test_weak_eval_respects_masks() -> None:
         threshold=0.5,
     )
     assert metrics["event"]["num_valid"] == 2
+    assert metrics["event"]["macro_precision"] == 1.0
     assert metrics["approval"]["num_valid"] == 1
+
+
+def test_train_wandb_payload_logs_only_precision_and_f1_validation_metrics() -> None:
+    metrics = {
+        "epoch": 3,
+        "train_loss": 1.0,
+        "train_event_loss": 0.5,
+        "train_approval_loss": 0.25,
+        "train_disapproval_loss": 0.125,
+        "weak": {
+            "event": {"macro_precision": 0.8, "macro_f1": 0.7, "macro_average_precision": 0.9, "macro_auroc": 0.95},
+            "approval": {"macro_precision": 0.6, "macro_f1": 0.5, "macro_average_precision": 0.7, "macro_auroc": 0.75},
+            "disapproval": {"macro_precision": 0.4, "macro_f1": 0.3, "macro_average_precision": 0.5, "macro_auroc": 0.55},
+        },
+        "strong": {
+            "segment_macro_precision": 0.9,
+            "segment_macro_recall": 0.2,
+            "segment_macro_f1": 0.8,
+            "event_precision": 0.7,
+            "event_recall": 0.1,
+            "event_f1": 0.6,
+        },
+    }
+
+    payload = train_module.wandb_validation_payload(metrics)
+
+    assert payload["weak.relevant_event.precision"] == 0.8
+    assert payload["weak.relevant_event.f1"] == 0.7
+    assert payload["weak.approval.precision"] == 0.6
+    assert payload["weak.approval.f1"] == 0.5
+    assert payload["weak.disapproval.precision"] == 0.4
+    assert payload["weak.disapproval.f1"] == 0.3
+    assert payload["strong.segment.precision"] == 0.9
+    assert payload["strong.segment.f1"] == 0.8
+    assert payload["strong.event.precision"] == 0.7
+    assert payload["strong.event.f1"] == 0.6
+    assert not any("average_precision" in key or "auroc" in key or "recall" in key for key in payload)
+
+
+def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> None:
+    metrics = {
+        "weak": {"event": {"macro_f1": 0.1}},
+        "strong": {
+            "segment_macro_f1": 0.8,
+            "event_f1": 0.6,
+        },
+    }
+
+    assert train_module.validation_score(metrics, "segment_macro_f1") == 0.8
+    assert train_module.validation_score(metrics, "event_f1") == 0.6
 
 
 def test_strong_eval_merges_overlapping_chunks() -> None:
@@ -217,6 +268,9 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     wav2vec2_config = yaml.safe_load((root / "configs" / "wav2vec2.yaml").read_text(encoding="utf-8"))
 
     assert default_config["model"]["encoder_type"] == "beats"
+    assert default_config["data"]["instance_sec"] == 1.0
+    assert default_config["loss"]["unclear_label_weight"] == 0.75
+    assert default_config["loss"]["conditional_attribute_loss"] is True
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
     assert wav2vec2_config["data"]["instance_sec"] == 1.0
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75

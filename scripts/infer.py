@@ -66,7 +66,7 @@ GROUND_TRUTH_LABEL_ORDER = [
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run inference on strong-labeled validation files and save overlay plots")
     parser.add_argument("--config", required=True, help="Path to YAML config")
-    parser.add_argument("--checkpoint", required=True, help="Path to trained model checkpoint (e.g. best_val.pt)")
+    parser.add_argument("--checkpoint", required=True, help="Path to trained model checkpoint (e.g. best_segment_f1.pt)")
     parser.add_argument("--output-dir", required=True, help="Directory to save inference plots")
     parser.add_argument("--threshold", type=float, default=None, help="Override event detection probability threshold")
     parser.add_argument(

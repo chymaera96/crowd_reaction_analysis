@@ -18,7 +18,7 @@ If you want Weights & Biases logging:
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
 - `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_1hz --wandb-mode disabled`
-- `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_val.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
+- `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_segment_f1.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs/wav2vec2 + temporal classifier heads
 - `src/crowd_reaction/eval.py` for weak metrics plus `sed_eval`-based segment and event validation
@@ -52,8 +52,9 @@ Weak targets:
 - `hard_annotation` is ignored for target construction
 
 Encoder configs:
-- `configs/default.yaml` uses frozen BEATs with `data.instance_sec: 1.0`
-- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, conditional attribute MIL, and `data.instance_sec: 1.0`, producing 1 Hz logits
+- `configs/default.yaml` uses frozen BEATs with conditional attribute MIL and `data.instance_sec: 1.0`
+- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, conditional attribute MIL, and `data.instance_sec: 1.0`
+- both configs use `loss.unclear_label_weight: 0.75` and produce 1 Hz logits
 
 Strong validation uses `sed_eval`:
 - all strong crowd-like labels collapse to a single positive `crowd` event class
@@ -62,8 +63,9 @@ Strong validation uses `sed_eval`:
 
 Checkpoint outputs:
 - `last.pt` for the final epoch
-- `best_val.pt` for the best validation epoch
-- both are saved under `<output-dir>/<run-id>/` when `--run-id` is provided
+- `best_segment_f1.pt` for the best strong segment-F1 validation epoch
+- `best_event_f1.pt` for the best strong event-F1 validation epoch
+- all are saved under `<output-dir>/<run-id>/` when `--run-id` is provided
 
 Inference plots:
 - `scripts/infer.py` runs the trained model over the strong-labeled validation files

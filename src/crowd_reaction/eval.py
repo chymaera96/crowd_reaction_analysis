@@ -33,6 +33,13 @@ def binary_f1_score(targets: np.ndarray, probs: np.ndarray, threshold: float = 0
     return _safe_divide(2.0 * precision * recall, precision + recall)
 
 
+def binary_precision_score(targets: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> float:
+    predictions = probs >= threshold
+    tp = float(np.logical_and(predictions, targets == 1).sum())
+    fp = float(np.logical_and(predictions, targets == 0).sum())
+    return _safe_divide(tp, tp + fp)
+
+
 def binary_auroc(targets: np.ndarray, probs: np.ndarray) -> float:
     positives = targets == 1
     negatives = targets == 0
@@ -97,6 +104,7 @@ def evaluate_weak(
                 "num_valid": int(valid.sum()),
                 "auroc": binary_auroc(class_targets, class_probs) if class_targets.size else 0.0,
                 "average_precision": binary_average_precision(class_targets, class_probs) if class_targets.size else 0.0,
+                "precision": binary_precision_score(class_targets, class_probs, threshold=threshold) if class_targets.size else 0.0,
                 "f1": binary_f1_score(class_targets, class_probs, threshold=threshold) if class_targets.size else 0.0,
             }
         )
@@ -106,6 +114,7 @@ def evaluate_weak(
         "num_valid": int((mask[:, 0] >= 0.5).sum()) if mask.shape[1] else 0,
         "macro_auroc": float(np.mean([item["auroc"] for item in per_class])) if per_class else 0.0,
         "macro_average_precision": float(np.mean([item["average_precision"] for item in per_class])) if per_class else 0.0,
+        "macro_precision": float(np.mean([item["precision"] for item in per_class])) if per_class else 0.0,
         "macro_f1": float(np.mean([item["f1"] for item in per_class])) if per_class else 0.0,
     }
 
