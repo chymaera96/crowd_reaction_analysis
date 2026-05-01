@@ -58,8 +58,10 @@ Encoder configs:
 
 Strong validation uses `sed_eval`:
 - all strong crowd-like labels collapse to a single positive `crowd` event class
+- approval and disapproval are also evaluated as separate strong-label event classes when those annotations exist
 - segment-based metrics at the configured `instance_sec`
 - event-based metrics with configurable onset collar and offset ratio
+- W&B logs strong precision/F1 only; top-level `strong.*` event metric names match the original training logs
 
 Checkpoint outputs:
 - `last.pt` for the final epoch

@@ -58,6 +58,7 @@ class SplitDatasets:
     train_records: list[WeakChunkRecord]
     val_records: list[WeakChunkRecord]
     strong_events: list[StrongEvent]
+    strong_events_by_task: dict[str, list[StrongEvent]]
 
 
 def normalize_name(value: str) -> str:
@@ -173,6 +174,15 @@ def strong_label_to_class(label: str) -> int | None:
     label = str(label).strip()
     if label in POSITIVE_EVENT_LABELS:
         return 0
+    return None
+
+
+def strong_label_to_task(label: str) -> str | None:
+    label = str(label).strip()
+    if label in APPROVAL_LABELS:
+        return "approval"
+    if label in DISAPPROVAL_LABELS:
+        return "disapproval"
     return None
 
 
@@ -316,6 +326,44 @@ def parse_strong_label_file(strong_txt_path: str, speech_id: str) -> list[Strong
     return events
 
 
+def parse_strong_label_file_by_task(strong_txt_path: str, speech_id: str) -> dict[str, list[StrongEvent]]:
+    events_by_task: dict[str, list[StrongEvent]] = {
+        "event": [],
+        "approval": [],
+        "disapproval": [],
+    }
+    with open(strong_txt_path, "r", encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            stripped = line.strip()
+            if not stripped:
+                continue
+            parts = stripped.split("\t")
+            if len(parts) != 3:
+                raise ValueError(f"Malformed strong label line {line_number} in {strong_txt_path}: {stripped}")
+            onset_sec, offset_sec, label = parts
+            event_class = strong_label_to_class(label)
+            if event_class is not None:
+                events_by_task["event"].append(
+                    StrongEvent(
+                        speech_id=speech_id,
+                        event_class=event_class,
+                        onset_sec=float(onset_sec),
+                        offset_sec=float(offset_sec),
+                    )
+                )
+            task_name = strong_label_to_task(label)
+            if task_name is not None:
+                events_by_task[task_name].append(
+                    StrongEvent(
+                        speech_id=speech_id,
+                        event_class=0,
+                        onset_sec=float(onset_sec),
+                        offset_sec=float(offset_sec),
+                    )
+                )
+    return events_by_task
+
+
 def build_split_records(
     *,
     audios_info_csv: str,
@@ -406,12 +454,18 @@ def build_split_records(
                     )
                 )
 
-    strong_events: list[StrongEvent] = []
+    strong_events_by_task: dict[str, list[StrongEvent]] = {
+        "event": [],
+        "approval": [],
+        "disapproval": [],
+    }
     for source_key, audio_path in validation_speech_ids.items():
         strong_txt_path = strong_txt_by_key.get(source_key)
         if strong_txt_path is None:
             raise ValueError(f"Validation file {audio_path.name} is marked strong-labeled but has no matching TXT file")
-        strong_events.extend(parse_strong_label_file(str(strong_txt_path), speech_id=audio_path.stem))
+        parsed_events = parse_strong_label_file_by_task(str(strong_txt_path), speech_id=audio_path.stem)
+        for task_name, task_events in parsed_events.items():
+            strong_events_by_task[task_name].extend(task_events)
 
     for source_key, is_strong in audio_info_index.items():
         if not is_strong:
@@ -419,7 +473,12 @@ def build_split_records(
         if source_key in original_audio_index and source_key not in strong_txt_by_key:
             raise ValueError(f"Strong-labeled title key {source_key} has no matching strong TXT file")
 
-    return SplitDatasets(train_records=train_records, val_records=val_records, strong_events=strong_events)
+    return SplitDatasets(
+        train_records=train_records,
+        val_records=val_records,
+        strong_events=strong_events_by_task["event"],
+        strong_events_by_task=strong_events_by_task,
+    )
 
 
 class WeakChunkDataset(torch.utils.data.Dataset):

@@ -342,7 +342,7 @@ def collect_strong_predictions(
     dataloader: torch.utils.data.DataLoader,
     *,
     device: torch.device,
-) -> tuple[dict[str, dict[str, np.ndarray]], list[SpeechChunkPrediction]]:
+) -> tuple[dict[str, dict[str, np.ndarray]], dict[str, list[SpeechChunkPrediction]]]:
     task_keys = {
         "event": ("event_target", "event_mask"),
         "approval": ("approval_target", "approval_mask"),
@@ -352,7 +352,10 @@ def collect_strong_predictions(
         task_name: {"targets": [], "probs": [], "mask": []}
         for task_name in task_keys
     }
-    chunk_predictions: list[SpeechChunkPrediction] = []
+    chunk_predictions_by_task: dict[str, list[SpeechChunkPrediction]] = {
+        task_name: []
+        for task_name in task_keys
+    }
 
     for batch in dataloader:
         instances = batch["instances"].to(device)
@@ -365,16 +368,28 @@ def collect_strong_predictions(
             collected[task_name]["probs"].append(outputs.bag_probabilities[task_name].cpu().numpy())
             collected[task_name]["mask"].append(batch["targets"][mask_key].cpu().numpy())
 
-        event_instance_probs = torch.sigmoid(outputs.instance_logits["event"]).cpu().numpy()
+        instance_probs_by_task = {
+            task_name: torch.sigmoid(task_logits).cpu().numpy()
+            for task_name, task_logits in outputs.instance_logits.items()
+        }
+        if "event" in instance_probs_by_task:
+            event_instance_probs = instance_probs_by_task["event"]
+            for task_name in ("approval", "disapproval"):
+                if task_name in instance_probs_by_task:
+                    instance_probs_by_task[task_name] = event_instance_probs * instance_probs_by_task[task_name]
+
         for batch_index in range(instances.shape[0]):
-            chunk_predictions.append(
-                SpeechChunkPrediction(
-                    speech_id=batch["speech_id"][batch_index],
-                    chunk_start_sec=float(batch["chunk_start_sec"][batch_index].item()),
-                    chunk_end_sec=float(batch["chunk_end_sec"][batch_index].item()),
-                    instance_probs=event_instance_probs[batch_index],
+            for task_name, instance_probs in instance_probs_by_task.items():
+                if task_name not in chunk_predictions_by_task:
+                    continue
+                chunk_predictions_by_task[task_name].append(
+                    SpeechChunkPrediction(
+                        speech_id=batch["speech_id"][batch_index],
+                        chunk_start_sec=float(batch["chunk_start_sec"][batch_index].item()),
+                        chunk_end_sec=float(batch["chunk_end_sec"][batch_index].item()),
+                        instance_probs=instance_probs[batch_index],
+                    )
                 )
-            )
 
     weak_task_predictions: dict[str, dict[str, np.ndarray]] = {}
     for task_name, payload in collected.items():
@@ -385,4 +400,4 @@ def collect_strong_predictions(
             "probs": np.concatenate(payload["probs"], axis=0),
             "mask": np.concatenate(payload["mask"], axis=0),
         }
-    return weak_task_predictions, chunk_predictions
+    return weak_task_predictions, chunk_predictions_by_task

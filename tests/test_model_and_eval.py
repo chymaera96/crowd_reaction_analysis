@@ -10,7 +10,7 @@ import pytest
 import torch
 import yaml
 
-from crowd_reaction.data import StrongEvent
+from crowd_reaction.data import StrongEvent, parse_strong_label_file_by_task
 from crowd_reaction.eval import SpeechChunkPrediction, evaluate_multitask_weak, evaluate_strong
 from crowd_reaction.model import CrowdReactionModel, DummyFeatureExtractor, mmm_bag_loss, mmm_bag_loss_from_probs
 
@@ -141,22 +141,43 @@ def test_train_wandb_payload_logs_only_precision_and_f1_validation_metrics() -> 
             "event_precision": 0.7,
             "event_recall": 0.1,
             "event_f1": 0.6,
+            "approval": {
+                "segment_macro_precision": 0.5,
+                "segment_macro_recall": 0.2,
+                "segment_macro_f1": 0.4,
+                "event_precision": 0.3,
+                "event_recall": 0.1,
+                "event_f1": 0.2,
+            },
+            "disapproval": {
+                "segment_macro_precision": 0.55,
+                "segment_macro_recall": 0.25,
+                "segment_macro_f1": 0.45,
+                "event_precision": 0.35,
+                "event_recall": 0.15,
+                "event_f1": 0.25,
+            },
         },
     }
 
     payload = train_module.wandb_validation_payload(metrics)
 
-    assert payload["weak.relevant_event.precision"] == 0.8
-    assert payload["weak.relevant_event.f1"] == 0.7
-    assert payload["weak.approval.precision"] == 0.6
-    assert payload["weak.approval.f1"] == 0.5
-    assert payload["weak.disapproval.precision"] == 0.4
-    assert payload["weak.disapproval.f1"] == 0.3
-    assert payload["strong.segment.precision"] == 0.9
-    assert payload["strong.segment.f1"] == 0.8
-    assert payload["strong.event.precision"] == 0.7
-    assert payload["strong.event.f1"] == 0.6
-    assert not any("average_precision" in key or "auroc" in key or "recall" in key for key in payload)
+    assert payload["strong.segment_macro_precision"] == 0.9
+    assert payload["strong.segment_macro_f1"] == 0.8
+    assert payload["strong.event_precision"] == 0.7
+    assert payload["strong.event_f1"] == 0.6
+    assert payload["strong.approval.segment_macro_precision"] == 0.5
+    assert payload["strong.approval.segment_macro_f1"] == 0.4
+    assert payload["strong.approval.event_precision"] == 0.3
+    assert payload["strong.approval.event_f1"] == 0.2
+    assert payload["strong.disapproval.segment_macro_precision"] == 0.55
+    assert payload["strong.disapproval.segment_macro_f1"] == 0.45
+    assert payload["strong.disapproval.event_precision"] == 0.35
+    assert payload["strong.disapproval.event_f1"] == 0.25
+    assert not any(
+        key.startswith("weak.") or "average_precision" in key or "auroc" in key or "recall" in key
+        for key in payload
+    )
 
 
 def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> None:
@@ -170,6 +191,23 @@ def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> N
 
     assert train_module.validation_score(metrics, "segment_macro_f1") == 0.8
     assert train_module.validation_score(metrics, "event_f1") == 0.6
+
+
+def test_parse_strong_label_file_by_task_splits_event_and_attributes(tmp_path: Path) -> None:
+    txt_path = tmp_path / "noise_sample.txt"
+    txt_path.write_text(
+        "0.0\t1.0\tclear_disapproval\n"
+        "1.0\t2.0\tcrowd_chorus\n"
+        "2.0\t3.0\tunclear_approval\n"
+        "3.0\t4.0\thard_annotation\n",
+        encoding="utf-8",
+    )
+
+    events_by_task = parse_strong_label_file_by_task(str(txt_path), speech_id="speech-1")
+
+    assert len(events_by_task["event"]) == 3
+    assert [(event.onset_sec, event.offset_sec) for event in events_by_task["approval"]] == [(2.0, 3.0)]
+    assert [(event.onset_sec, event.offset_sec) for event in events_by_task["disapproval"]] == [(0.0, 1.0)]
 
 
 def test_strong_eval_merges_overlapping_chunks() -> None:

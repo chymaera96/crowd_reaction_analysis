@@ -147,29 +147,37 @@ def evaluate_epoch(
     model: CrowdReactionModel,
     val_loader: DataLoader,
     *,
-    strong_events,
+    strong_events_by_task,
     instance_sec: float,
     threshold: float,
     event_collar_sec: float,
     event_offset_ratio: float,
     device: torch.device,
 ) -> dict[str, Any]:
-    weak_predictions, chunk_predictions = collect_strong_predictions(model, val_loader, device=device)
+    weak_predictions, chunk_predictions_by_task = collect_strong_predictions(model, val_loader, device=device)
     weak_metrics = evaluate_multitask_weak(weak_predictions, threshold=threshold)
 
     strong_metrics: dict[str, Any] | None = None
-    if strong_events:
+    if any(strong_events_by_task.values()):
         speech_durations = speech_durations_from_records(val_loader.dataset.records)
-        strong_metrics = evaluate_strong(
-            chunk_predictions,
-            strong_events,
-            num_classes=1,
-            instance_sec=instance_sec,
-            speech_durations=speech_durations,
-            threshold=threshold,
-            event_collar_sec=event_collar_sec,
-            event_offset_ratio=event_offset_ratio,
-        )
+        strong_metrics = {}
+        for task_name in ("event", "approval", "disapproval"):
+            task_events = strong_events_by_task.get(task_name, [])
+            task_predictions = chunk_predictions_by_task.get(task_name, [])
+            if not task_events and not task_predictions:
+                continue
+            strong_metrics[task_name] = evaluate_strong(
+                task_predictions,
+                task_events,
+                num_classes=1,
+                instance_sec=instance_sec,
+                speech_durations=speech_durations,
+                threshold=threshold,
+                event_collar_sec=event_collar_sec,
+                event_offset_ratio=event_offset_ratio,
+            )
+        if "event" in strong_metrics:
+            strong_metrics.update(strong_metrics["event"])
 
     return {
         "weak": weak_metrics,
@@ -198,21 +206,6 @@ def save_checkpoint(
     )
 
 
-def flatten_metrics(metrics: dict[str, Any], prefix: str = "") -> dict[str, float | int]:
-    flattened: dict[str, float | int] = {}
-    for key, value in metrics.items():
-        full_key = f"{prefix}{key}" if not prefix else f"{prefix}.{key}"
-        if isinstance(value, dict):
-            flattened.update(flatten_metrics(value, prefix=full_key))
-        elif isinstance(value, list):
-            continue
-        elif value is None:
-            continue
-        elif isinstance(value, (int, float)):
-            flattened[full_key] = value
-    return flattened
-
-
 def _finite_float(value: Any) -> float | None:
     if value is None:
         return None
@@ -231,11 +224,23 @@ def validation_score(metrics: dict[str, Any], metric_name: str) -> float:
     return float(metrics["weak"]["event"]["macro_f1"])
 
 
-def _weak_task_metric(metrics: dict[str, Any], task_name: str, metric_name: str) -> float | None:
-    task_metrics = metrics["weak"].get(task_name)
-    if task_metrics is None:
-        return None
-    return _finite_float(task_metrics.get(f"macro_{metric_name}"))
+def _add_strong_task_payload(
+    payload: dict[str, float | int | None],
+    metrics: dict[str, Any],
+    *,
+    prefix: str,
+    use_main_names: bool,
+) -> None:
+    if use_main_names:
+        payload["strong.segment_macro_precision"] = _finite_float(metrics.get("segment_macro_precision"))
+        payload["strong.segment_macro_f1"] = _finite_float(metrics.get("segment_macro_f1"))
+        payload["strong.event_precision"] = _finite_float(metrics.get("event_precision"))
+        payload["strong.event_f1"] = _finite_float(metrics.get("event_f1"))
+        return
+    payload[f"{prefix}.segment_macro_precision"] = _finite_float(metrics.get("segment_macro_precision"))
+    payload[f"{prefix}.segment_macro_f1"] = _finite_float(metrics.get("segment_macro_f1"))
+    payload[f"{prefix}.event_precision"] = _finite_float(metrics.get("event_precision"))
+    payload[f"{prefix}.event_f1"] = _finite_float(metrics.get("event_f1"))
 
 
 def wandb_validation_payload(metrics: dict[str, Any]) -> dict[str, float | int | None]:
@@ -246,24 +251,14 @@ def wandb_validation_payload(metrics: dict[str, Any]) -> dict[str, float | int |
         "train.approval_loss": metrics.get("train_approval_loss"),
         "train.disapproval_loss": metrics.get("train_disapproval_loss"),
     }
-    for task_name, label_name in (
-        ("event", "relevant_event"),
-        ("approval", "approval"),
-        ("disapproval", "disapproval"),
-    ):
-        payload[f"weak.{label_name}.precision"] = _weak_task_metric(metrics, task_name, "precision")
-        payload[f"weak.{label_name}.f1"] = _weak_task_metric(metrics, task_name, "f1")
 
     strong = metrics.get("strong")
     if strong is not None:
-        payload.update(
-            {
-                "strong.segment.precision": _finite_float(strong.get("segment_macro_precision")),
-                "strong.segment.f1": _finite_float(strong.get("segment_macro_f1")),
-                "strong.event.precision": _finite_float(strong.get("event_precision")),
-                "strong.event.f1": _finite_float(strong.get("event_f1")),
-            }
-        )
+        _add_strong_task_payload(payload, strong, prefix="strong.relevant_event", use_main_names=True)
+        for task_name in ("approval", "disapproval"):
+            task_metrics = strong.get(task_name)
+            if task_metrics is not None:
+                _add_strong_task_payload(payload, task_metrics, prefix=f"strong.{task_name}", use_main_names=False)
     return {key: value for key, value in payload.items() if value is not None}
 
 
@@ -371,7 +366,7 @@ def main() -> None:
         metrics = evaluate_epoch(
             model,
             val_loader,
-            strong_events=split_datasets.strong_events,
+            strong_events_by_task=split_datasets.strong_events_by_task,
             instance_sec=float(config["data"]["instance_sec"]),
             threshold=float(config["val"].get("threshold", 0.5)),
             event_collar_sec=float(config["val"].get("event_collar_sec", config["data"]["instance_sec"])),
@@ -419,9 +414,11 @@ def main() -> None:
                 config=config,
             )
         strong = metrics.get("strong")
-        weak_event = metrics["weak"]["event"]
-        weak_approval = metrics["weak"].get("approval")
-        weak_disapproval = metrics["weak"].get("disapproval")
+        strong_event = None if strong is None else strong.get("event", strong)
+        if strong_event is not None and "segment_macro_precision" not in strong_event:
+            strong_event = None
+        strong_approval = None if strong is None else strong.get("approval")
+        strong_disapproval = None if strong is None else strong.get("disapproval")
 
         print(
             json.dumps(
@@ -433,16 +430,26 @@ def main() -> None:
                     "train_disapproval_loss": metrics.get("train_disapproval_loss"),
                     "val_segment_f1_score": segment_f1_score,
                     "val_event_f1_score": event_f1_score,
-                    "weak_relevant_event_precision": weak_event["macro_precision"],
-                    "weak_event_macro_f1": weak_event["macro_f1"],
-                    "weak_approval_precision": None if weak_approval is None else weak_approval["macro_precision"],
-                    "weak_approval_f1": None if weak_approval is None else weak_approval["macro_f1"],
-                    "weak_disapproval_precision": None if weak_disapproval is None else weak_disapproval["macro_precision"],
-                    "weak_disapproval_f1": None if weak_disapproval is None else weak_disapproval["macro_f1"],
-                    "strong_segment_macro_precision": None if strong is None else strong["segment_macro_precision"],
-                    "strong_segment_macro_f1": None if strong is None else strong["segment_macro_f1"],
-                    "strong_event_precision": None if strong is None else strong["event_precision"],
-                    "strong_event_f1": None if strong is None else strong["event_f1"],
+                    "strong_segment_macro_precision": None
+                    if strong_event is None
+                    else strong_event["segment_macro_precision"],
+                    "strong_segment_macro_f1": None if strong_event is None else strong_event["segment_macro_f1"],
+                    "strong_event_precision": None if strong_event is None else strong_event["event_precision"],
+                    "strong_event_f1": None if strong_event is None else strong_event["event_f1"],
+                    "strong_approval_segment_macro_precision": None if strong_approval is None else strong_approval["segment_macro_precision"],
+                    "strong_approval_segment_macro_f1": None if strong_approval is None else strong_approval["segment_macro_f1"],
+                    "strong_approval_event_precision": None if strong_approval is None else strong_approval["event_precision"],
+                    "strong_approval_event_f1": None if strong_approval is None else strong_approval["event_f1"],
+                    "strong_disapproval_segment_macro_precision": None
+                    if strong_disapproval is None
+                    else strong_disapproval["segment_macro_precision"],
+                    "strong_disapproval_segment_macro_f1": None
+                    if strong_disapproval is None
+                    else strong_disapproval["segment_macro_f1"],
+                    "strong_disapproval_event_precision": None
+                    if strong_disapproval is None
+                    else strong_disapproval["event_precision"],
+                    "strong_disapproval_event_f1": None if strong_disapproval is None else strong_disapproval["event_f1"],
                 }
             )
         )
@@ -455,7 +462,6 @@ def main() -> None:
     if wandb_run is not None:
         wandb_run.summary["best_segment_f1"] = best_segment_f1
         wandb_run.summary["best_event_f1"] = best_event_f1
-        wandb_run.save(str(output_dir / "history.json"), policy="now")
         for checkpoint_name in ("last.pt", "best_segment_f1.pt", "best_event_f1.pt"):
             checkpoint_path = output_dir / checkpoint_name
             if checkpoint_path.exists():
