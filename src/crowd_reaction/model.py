@@ -103,6 +103,8 @@ class FrozenWav2Vec2FeatureExtractor(nn.Module):
     def forward(self, instances: torch.Tensor) -> torch.Tensor:
         batch, steps, samples = instances.shape
         waveform = instances.reshape(batch, steps * samples)
+        waveform = waveform - waveform.mean(dim=1, keepdim=True)
+        waveform = waveform / waveform.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-7)
         with torch.no_grad():
             features = self.encoder(waveform).last_hidden_state
             pooled = F.adaptive_avg_pool1d(features.transpose(1, 2), output_size=steps).transpose(1, 2)
@@ -227,12 +229,26 @@ def mmm_bag_loss(
     class_weights: torch.Tensor | None = None,
     bag_mask: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    if instance_logits.dim() != 3:
-        raise ValueError(f"Expected instance_logits [B, T, C], got {tuple(instance_logits.shape)}")
-    if bag_labels.shape != (instance_logits.shape[0], instance_logits.shape[2]):
+    return mmm_bag_loss_from_probs(
+        torch.sigmoid(instance_logits),
+        bag_labels,
+        class_weights=class_weights,
+        bag_mask=bag_mask,
+    )
+
+
+def mmm_bag_loss_from_probs(
+    instance_probs: torch.Tensor,
+    bag_labels: torch.Tensor,
+    class_weights: torch.Tensor | None = None,
+    bag_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if instance_probs.dim() != 3:
+        raise ValueError(f"Expected instance_probs [B, T, C], got {tuple(instance_probs.shape)}")
+    if bag_labels.shape != (instance_probs.shape[0], instance_probs.shape[2]):
         raise ValueError("bag_labels must have shape [B, C]")
 
-    probs = torch.sigmoid(instance_logits)
+    probs = instance_probs.clamp(min=1e-7, max=1.0 - 1e-7)
     max_probs = probs.amax(dim=1)
     mean_probs = probs.mean(dim=1)
     min_probs = probs.amin(dim=1)

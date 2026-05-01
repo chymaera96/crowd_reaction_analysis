@@ -16,7 +16,7 @@ data:
   negative_data_dir: /gpfs/scratch/acw723/data/negative_data
   sample_rate: 16000
   chunk_sec: 20.0
-  instance_sec: 0.5
+  instance_sec: 1.0
 
 model:
   encoder_type: wav2vec2
@@ -42,7 +42,8 @@ loss:
   disapproval_class_weights: [1.0]
   lambda_approval: 0.5
   lambda_disapproval: 0.5
-  unclear_label_weight: 0.5
+  unclear_label_weight: 0.75
+  conditional_attribute_loss: true
 
 trainer:
   epochs: 25

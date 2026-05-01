@@ -149,15 +149,11 @@ def weak_row_to_targets(row: pd.Series, *, unclear_label_weight: float = 0.5) ->
     event_mask = 0.0 if contradictory_event or (not event_positive and not no_crowd) else 1.0
     event_target = (1.0,) if event_positive and not contradictory_event else (0.0,)
 
-    attribute_mask = 0.0 if no_crowd or crowd_chorus or not event_positive else max(approval_confidence, disapproval_confidence)
     approval_target = (1.0 if approval else 0.0,)
     disapproval_target = (1.0 if disapproval else 0.0,)
-    if attribute_mask <= 0.0:
-        approval_mask = 0.0
-        disapproval_mask = 0.0
-    else:
-        approval_mask = approval_confidence if approval else attribute_mask
-        disapproval_mask = disapproval_confidence if disapproval else attribute_mask
+    attribute_mask = 0.0 if no_crowd or crowd_chorus or contradictory_event or not event_positive else max(approval_confidence, disapproval_confidence)
+    approval_mask = approval_confidence if approval and attribute_mask > 0.0 else attribute_mask
+    disapproval_mask = disapproval_confidence if disapproval and attribute_mask > 0.0 else attribute_mask
 
     return WeakBagTargets(
         event_target=event_target,

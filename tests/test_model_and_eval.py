@@ -2,15 +2,17 @@ from __future__ import annotations
 
 import importlib.util
 import math
+from types import SimpleNamespace
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+import yaml
 
 from crowd_reaction.data import StrongEvent
 from crowd_reaction.eval import SpeechChunkPrediction, evaluate_multitask_weak, evaluate_strong
-from crowd_reaction.model import CrowdReactionModel, DummyFeatureExtractor, mmm_bag_loss
+from crowd_reaction.model import CrowdReactionModel, DummyFeatureExtractor, mmm_bag_loss, mmm_bag_loss_from_probs
 
 
 _INFER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "infer.py"
@@ -18,6 +20,12 @@ _INFER_SPEC = importlib.util.spec_from_file_location("crowd_reaction_infer", _IN
 assert _INFER_SPEC is not None and _INFER_SPEC.loader is not None
 infer_module = importlib.util.module_from_spec(_INFER_SPEC)
 _INFER_SPEC.loader.exec_module(infer_module)
+
+_TRAIN_PATH = Path(__file__).resolve().parents[1] / "scripts" / "train.py"
+_TRAIN_SPEC = importlib.util.spec_from_file_location("crowd_reaction_train", _TRAIN_PATH)
+assert _TRAIN_SPEC is not None and _TRAIN_SPEC.loader is not None
+train_module = importlib.util.module_from_spec(_TRAIN_SPEC)
+_TRAIN_SPEC.loader.exec_module(train_module)
 
 
 class DummyWav2Vec2StyleFeatureExtractor(torch.nn.Module):
@@ -44,6 +52,53 @@ def test_mmm_loss_returns_zero_when_all_bags_are_masked() -> None:
     mask = torch.zeros((2,), dtype=torch.float32)
     loss = mmm_bag_loss(logits, labels, bag_mask=mask)
     assert torch.isclose(loss, torch.tensor(0.0), atol=1e-6)
+
+
+def test_mmm_loss_from_probs_matches_logit_wrapper() -> None:
+    logits = torch.tensor([[[0.2], [-0.4], [1.1]], [[-0.7], [0.8], [0.1]]], dtype=torch.float32)
+    labels = torch.tensor([[1.0], [0.0]], dtype=torch.float32)
+    mask = torch.tensor([1.0, 0.5], dtype=torch.float32)
+
+    assert torch.isclose(
+        mmm_bag_loss_from_probs(torch.sigmoid(logits), labels, bag_mask=mask),
+        mmm_bag_loss(logits, labels, bag_mask=mask),
+        atol=1e-6,
+    )
+
+
+def test_conditional_attribute_loss_uses_detached_event_gate() -> None:
+    event_logits = torch.tensor([[[2.0], [-2.0]]], dtype=torch.float32, requires_grad=True)
+    approval_logits = torch.tensor([[[1.0], [0.0]]], dtype=torch.float32, requires_grad=True)
+    outputs = SimpleNamespace(
+        instance_logits={
+            "event": event_logits,
+            "approval": approval_logits,
+        }
+    )
+    targets = {
+        "event_target": torch.tensor([[1.0]], dtype=torch.float32),
+        "event_mask": torch.tensor([0.0], dtype=torch.float32),
+        "approval_target": torch.tensor([[1.0]], dtype=torch.float32),
+        "approval_mask": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+    loss, _ = train_module.compute_multitask_loss(
+        outputs,
+        targets,
+        loss_config={"conditional_attribute_loss": True, "lambda_approval": 1.0},
+        task_class_weights={},
+    )
+    loss.backward()
+
+    expected = mmm_bag_loss_from_probs(
+        torch.sigmoid(event_logits.detach()) * torch.sigmoid(approval_logits.detach()),
+        targets["approval_target"],
+        bag_mask=targets["approval_mask"],
+    )
+    assert torch.isclose(loss.detach(), expected, atol=1e-6)
+    assert event_logits.grad is None or torch.allclose(event_logits.grad, torch.zeros_like(event_logits))
+    assert approval_logits.grad is not None
+    assert float(approval_logits.grad.abs().sum().item()) > 0.0
 
 
 def test_weak_eval_respects_masks() -> None:
@@ -134,26 +189,38 @@ def test_synthetic_one_step_training_smoke() -> None:
     assert float(loss.detach().item()) > 0.0
 
 
-def test_wav2vec2_style_feature_extractor_supports_two_hz_bins() -> None:
+def test_wav2vec2_style_feature_extractor_supports_one_hz_bins() -> None:
     extractor = DummyWav2Vec2StyleFeatureExtractor(output_dim=8)
-    instances = torch.randn(2, 40, 8000)
+    instances = torch.randn(2, 20, 16000)
     embeddings = extractor(instances)
 
-    assert embeddings.shape == (2, 40, 8)
+    assert embeddings.shape == (2, 20, 8)
 
 
-def test_model_with_wav2vec2_style_features_outputs_two_hz_logits() -> None:
+def test_model_with_wav2vec2_style_features_outputs_one_hz_logits() -> None:
     model = CrowdReactionModel(
         feature_extractor=DummyWav2Vec2StyleFeatureExtractor(output_dim=8),
         chunk_sec=20.0,
-        instance_sec=0.5,
+        instance_sec=1.0,
     )
 
-    outputs = model(instances=torch.randn(2, 40, 8000))
+    outputs = model(instances=torch.randn(2, 20, 16000))
 
-    assert outputs.instance_logits["event"].shape == (2, 40, 1)
-    assert outputs.instance_logits["approval"].shape == (2, 40, 1)
-    assert outputs.instance_logits["disapproval"].shape == (2, 40, 1)
+    assert outputs.instance_logits["event"].shape == (2, 20, 1)
+    assert outputs.instance_logits["approval"].shape == (2, 20, 1)
+    assert outputs.instance_logits["disapproval"].shape == (2, 20, 1)
+
+
+def test_encoder_configs_keep_expected_training_recipes() -> None:
+    root = Path(__file__).resolve().parents[1]
+    default_config = yaml.safe_load((root / "configs" / "default.yaml").read_text(encoding="utf-8"))
+    wav2vec2_config = yaml.safe_load((root / "configs" / "wav2vec2.yaml").read_text(encoding="utf-8"))
+
+    assert default_config["model"]["encoder_type"] == "beats"
+    assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
+    assert wav2vec2_config["data"]["instance_sec"] == 1.0
+    assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
+    assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:

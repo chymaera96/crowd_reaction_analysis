@@ -23,7 +23,7 @@ if str(SRC) not in sys.path:
 
 from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
 from crowd_reaction.eval import collect_strong_predictions, evaluate_multitask_weak, evaluate_strong
-from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss
+from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss, mmm_bag_loss_from_probs
 
 
 TASK_SPECS = {
@@ -105,18 +105,31 @@ def compute_multitask_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     total_loss = None
     loss_values: dict[str, float] = {}
+    conditional_attribute_loss = bool(loss_config.get("conditional_attribute_loss", False))
+    event_probs = None
+    if conditional_attribute_loss and "event" in outputs.instance_logits:
+        event_probs = torch.sigmoid(outputs.instance_logits["event"]).detach()
 
     for task_name, spec in TASK_SPECS.items():
         if task_name not in outputs.instance_logits:
             continue
         target_tensor = batch_targets[spec["target_key"]]
         mask_tensor = batch_targets[spec["mask_key"]]
-        task_loss = mmm_bag_loss(
-            outputs.instance_logits[task_name],
-            target_tensor,
-            class_weights=task_class_weights.get(task_name),
-            bag_mask=mask_tensor,
-        )
+        if task_name != "event" and conditional_attribute_loss and event_probs is not None:
+            task_probs = event_probs * torch.sigmoid(outputs.instance_logits[task_name])
+            task_loss = mmm_bag_loss_from_probs(
+                task_probs,
+                target_tensor,
+                class_weights=task_class_weights.get(task_name),
+                bag_mask=mask_tensor,
+            )
+        else:
+            task_loss = mmm_bag_loss(
+                outputs.instance_logits[task_name],
+                target_tensor,
+                class_weights=task_class_weights.get(task_name),
+                bag_mask=mask_tensor,
+            )
         if task_name == "event":
             weighted_loss = task_loss
         else:

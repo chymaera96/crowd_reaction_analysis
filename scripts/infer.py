@@ -234,6 +234,76 @@ def write_sonic_visualiser_regions(output_path: Path, regions: list[tuple[float,
             writer.writerow([f"{float(onset_sec):.6f}", f"{duration_sec:.6f}", label])
 
 
+def prediction_diagnostics_row(
+    *,
+    speech_id: str,
+    predicted_probs: np.ndarray,
+    label_names: list[str],
+    instance_sec: float,
+    event_threshold: float,
+) -> dict[str, str]:
+    row: dict[str, str] = {
+        "speech_id": speech_id,
+        "num_bins": str(int(predicted_probs.shape[0])),
+        "instance_sec": f"{float(instance_sec):.6f}",
+    }
+    if "relevant_event" not in label_names:
+        return row
+
+    event_probs = predicted_probs[:, label_names.index("relevant_event")]
+    event_active = event_probs >= float(event_threshold)
+    top_event_count = max(1, int(math.ceil(0.1 * event_probs.shape[0]))) if event_probs.size else 0
+    top_event_indices = np.argsort(-event_probs)[:top_event_count] if top_event_count else np.array([], dtype=np.int64)
+
+    for label_name in ("relevant_event", "approval", "disapproval"):
+        if label_name not in label_names:
+            continue
+        probs = predicted_probs[:, label_names.index(label_name)]
+        max_index = int(np.argmax(probs)) if probs.size else 0
+        row[f"{label_name}_max"] = f"{float(np.max(probs)):.6f}" if probs.size else ""
+        row[f"{label_name}_mean"] = f"{float(np.mean(probs)):.6f}" if probs.size else ""
+        row[f"{label_name}_argmax_sec"] = f"{(max_index + 0.5) * float(instance_sec):.6f}" if probs.size else ""
+        if label_name == "relevant_event":
+            row["relevant_event_active_bins"] = str(int(event_active.sum()))
+            continue
+        row[f"{label_name}_mean_when_event_active"] = (
+            f"{float(np.mean(probs[event_active])):.6f}" if event_active.any() else ""
+        )
+        row[f"{label_name}_max_when_event_active"] = (
+            f"{float(np.max(probs[event_active])):.6f}" if event_active.any() else ""
+        )
+        row[f"{label_name}_mean_top_event_decile"] = (
+            f"{float(np.mean(probs[top_event_indices])):.6f}" if top_event_indices.size else ""
+        )
+        if probs.size > 1 and float(np.std(event_probs)) > 0.0 and float(np.std(probs)) > 0.0:
+            row[f"{label_name}_event_corr"] = f"{float(np.corrcoef(event_probs, probs)[0, 1]):.6f}"
+        else:
+            row[f"{label_name}_event_corr"] = ""
+
+    return row
+
+
+def write_prediction_diagnostics(output_path: Path, rows: list[dict[str, str]]) -> None:
+    if not rows:
+        return
+    fieldnames = sorted({key for row in rows for key in row})
+    preferred = [
+        "speech_id",
+        "num_bins",
+        "instance_sec",
+        "relevant_event_max",
+        "relevant_event_mean",
+        "relevant_event_argmax_sec",
+        "relevant_event_active_bins",
+    ]
+    ordered_fieldnames = [field for field in preferred if field in fieldnames]
+    ordered_fieldnames += [field for field in fieldnames if field not in preferred]
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=ordered_fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
 def collect_multitask_chunk_predictions(
     model: CrowdReactionModel,
     dataloader: DataLoader,
@@ -583,6 +653,7 @@ def main() -> None:
         speech_durations=speech_durations,
     )
 
+    diagnostics_rows: list[dict[str, str]] = []
     for speech_id in sorted(aggregated_probs):
         if speech_id not in record_by_speech:
             continue
@@ -626,11 +697,25 @@ def main() -> None:
         )
         write_sonic_visualiser_regions(predicted_annotation_path, predicted_regions)
         write_sonic_visualiser_regions(ground_truth_annotation_path, ground_truth_regions)
+        diagnostics_rows.append(
+            prediction_diagnostics_row(
+                speech_id=speech_id,
+                predicted_probs=pred_pad,
+                label_names=label_names,
+                instance_sec=float(config["data"]["instance_sec"]),
+                event_threshold=event_threshold,
+            )
+        )
         print(f"Saved {output_path}")
         print(f"Saved {predicted_annotation_path}")
         print(f"Saved {ground_truth_annotation_path}")
         if wandb_run is not None and wandb_module is not None:
             wandb_run.log({f"inference/{speech_id}": wandb_module.Image(str(output_path))})
+
+    diagnostics_path = output_dir / "prediction_diagnostics.csv"
+    write_prediction_diagnostics(diagnostics_path, diagnostics_rows)
+    if diagnostics_rows:
+        print(f"Saved {diagnostics_path}")
 
     num_saved_plots = len(list(output_dir.glob("*.png")))
     print(f"Total plots saved in {output_dir}: {num_saved_plots}")

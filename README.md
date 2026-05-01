@@ -17,7 +17,7 @@ If you want Weights & Biases logging:
 
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
-- `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_2hz --wandb-mode disabled`
+- `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_1hz --wandb-mode disabled`
 - `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_val.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs/wav2vec2 + temporal classifier heads
@@ -46,13 +46,14 @@ Weak targets:
 - weak positives are any of `clear_disapproval`, `unclear_disapproval`, `unclear_approval`, `clear_approval`, or `crowd_chorus`
 - weak negatives are `no_crowd`
 - clear labels train approval/disapproval with full weight; unclear labels train them with `loss.unclear_label_weight`
+- configs may enable conditional attribute MIL so approval/disapproval losses are trained on event-gated attribute probabilities
 - `crowd_chorus` trains only `event`
 - approval/disapproval are masked for `no_crowd` because they are immaterial when no event is present
 - `hard_annotation` is ignored for target construction
 
 Encoder configs:
 - `configs/default.yaml` uses frozen BEATs with `data.instance_sec: 1.0`
-- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with `data.instance_sec: 0.5`, producing 2 Hz logits
+- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, conditional attribute MIL, and `data.instance_sec: 1.0`, producing 1 Hz logits
 
 Strong validation uses `sed_eval`:
 - all strong crowd-like labels collapse to a single positive `crowd` event class
