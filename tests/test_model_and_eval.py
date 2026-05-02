@@ -27,6 +27,12 @@ assert _TRAIN_SPEC is not None and _TRAIN_SPEC.loader is not None
 train_module = importlib.util.module_from_spec(_TRAIN_SPEC)
 _TRAIN_SPEC.loader.exec_module(train_module)
 
+_RESULTS_PATH = Path(__file__).resolve().parents[1] / "scripts" / "results.py"
+_RESULTS_SPEC = importlib.util.spec_from_file_location("crowd_reaction_results", _RESULTS_PATH)
+assert _RESULTS_SPEC is not None and _RESULTS_SPEC.loader is not None
+results_module = importlib.util.module_from_spec(_RESULTS_SPEC)
+_RESULTS_SPEC.loader.exec_module(results_module)
+
 
 class DummyWav2Vec2StyleFeatureExtractor(torch.nn.Module):
     def __init__(self, output_dim: int = 8) -> None:
@@ -191,6 +197,61 @@ def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> N
 
     assert train_module.validation_score(metrics, "segment_macro_f1") == 0.8
     assert train_module.validation_score(metrics, "event_f1") == 0.6
+
+
+def test_results_thresholds_use_inference_threshold_policy() -> None:
+    thresholds = results_module.thresholds_from_config(
+        {
+            "val": {
+                "threshold": 0.1,
+                "event_threshold": 0.2,
+                "attribute_threshold": 0.3,
+            }
+        }
+    )
+
+    assert thresholds == {
+        "relevant_event": 0.2,
+        "approval": 0.3,
+        "disapproval": 0.3,
+    }
+
+
+def test_results_payload_shape() -> None:
+    payload = results_module.build_results_payload(
+        config_path="configs/wav2vec2.yaml",
+        checkpoint_path="outputs/run/best_segment_f1.pt",
+        thresholds={"relevant_event": 0.5, "approval": 0.4, "disapproval": 0.4},
+        metrics={
+            "relevant_event": {"event_f1": 0.6},
+            "approval": {"event_f1": 0.2},
+            "disapproval": {"event_f1": 0.3},
+        },
+    )
+
+    assert payload["config"] == "configs/wav2vec2.yaml"
+    assert payload["checkpoint"] == "outputs/run/best_segment_f1.pt"
+    assert payload["thresholds"]["relevant_event"] == 0.5
+    assert payload["metrics"]["approval"]["event_f1"] == 0.2
+
+
+def test_results_parse_args_defaults_output_to_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "results.py",
+            "--config",
+            "configs/wav2vec2.yaml",
+            "--checkpoint",
+            "outputs/run/best_segment_f1.pt",
+        ],
+    )
+
+    args = results_module.parse_args()
+
+    assert args.config == "configs/wav2vec2.yaml"
+    assert args.checkpoint == "outputs/run/best_segment_f1.pt"
+    assert args.output is None
 
 
 def test_parse_strong_label_file_by_task_splits_event_and_attributes(tmp_path: Path) -> None:

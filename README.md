@@ -18,6 +18,7 @@ If you want Weights & Biases logging:
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
 - `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_1hz --wandb-mode disabled`
+- `scripts/results.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_1hz/best_segment_f1.pt`
 - `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_segment_f1.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs/wav2vec2 + temporal classifier heads
