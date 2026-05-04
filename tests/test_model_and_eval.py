@@ -223,16 +223,35 @@ def test_results_payload_shape() -> None:
         checkpoint_path="outputs/run/best_segment_f1.pt",
         thresholds={"relevant_event": 0.5, "approval": 0.4, "disapproval": 0.4},
         metrics={
-            "relevant_event": {"event_f1": 0.6},
-            "approval": {"event_f1": 0.2},
-            "disapproval": {"event_f1": 0.3},
+            "relevant_event": {
+                "segment_per_class": [{"class_index": 0}],
+                "segment_macro_precision": 0.9,
+                "segment_macro_recall": 0.8,
+                "segment_macro_f1": 0.85,
+                "event_per_class": [{"class_index": 0}],
+                "event_precision": 0.7,
+                "event_recall": 0.6,
+                "event_f1": 0.65,
+            },
+            "approval": {
+                "segment_macro_precision": 0.5,
+                "segment_macro_recall": 0.4,
+                "segment_macro_f1": 0.45,
+                "event_precision": 0.3,
+                "event_recall": 0.2,
+                "event_f1": 0.25,
+            },
         },
     )
 
     assert payload["config"] == "configs/wav2vec2.yaml"
     assert payload["checkpoint"] == "outputs/run/best_segment_f1.pt"
     assert payload["thresholds"]["relevant_event"] == 0.5
-    assert payload["metrics"]["approval"]["event_f1"] == 0.2
+    assert payload["metrics"]["relevant_event"]["segment"]["precision"] == 0.9
+    assert payload["metrics"]["relevant_event"]["segment"]["f1"] == 0.85
+    assert payload["metrics"]["approval"]["event"]["f1"] == 0.25
+    assert "segment_per_class" not in payload["metrics"]["relevant_event"]
+    assert "segment_macro_f1" not in payload["metrics"]["relevant_event"]
 
 
 def test_results_parse_args_defaults_output_to_none(monkeypatch: pytest.MonkeyPatch) -> None:

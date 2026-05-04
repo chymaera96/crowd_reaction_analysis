@@ -102,7 +102,29 @@ def build_results_payload(
         "config": config_path,
         "checkpoint": checkpoint_path,
         "thresholds": thresholds,
-        "metrics": metrics,
+        "metrics": clean_results_metrics(metrics),
+    }
+
+
+def clean_strong_metrics(metrics: dict[str, Any]) -> dict[str, dict[str, float]]:
+    return {
+        "segment": {
+            "precision": float(metrics["segment_macro_precision"]),
+            "recall": float(metrics["segment_macro_recall"]),
+            "f1": float(metrics["segment_macro_f1"]),
+        },
+        "event": {
+            "precision": float(metrics["event_precision"]),
+            "recall": float(metrics["event_recall"]),
+            "f1": float(metrics["event_f1"]),
+        },
+    }
+
+
+def clean_results_metrics(metrics: dict[str, dict[str, Any]]) -> dict[str, dict[str, dict[str, float]]]:
+    return {
+        label_name: clean_strong_metrics(label_metrics)
+        for label_name, label_metrics in metrics.items()
     }
 
 

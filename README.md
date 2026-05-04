@@ -63,6 +63,7 @@ Strong validation uses `sed_eval`:
 - segment-based metrics at the configured `instance_sec`
 - event-based metrics with configurable onset collar and offset ratio
 - W&B logs strong precision/F1 only; top-level `strong.*` event metric names match the original training logs
+- `scripts/results.py` saves a compact paper-facing JSON without per-class or macro field names
 
 Checkpoint outputs:
 - `last.pt` for the final epoch
