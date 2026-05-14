@@ -15,7 +15,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
+from crowd_reaction.data import WeakChunkDataset, build_strong_validation_split, collate_batch, speech_durations_from_records
 from crowd_reaction.eval import collect_strong_predictions, evaluate_strong
 from crowd_reaction.model import CrowdReactionModel
 from torch.utils.data import DataLoader
@@ -171,14 +171,10 @@ def main() -> None:
     output_path = Path(args.output) if args.output is not None else checkpoint_path.parent / "results.json"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    split_data = build_split_records(
-        audios_info_csv=config["data"]["audios_info_csv"],
-        weak_labels_csv=config["data"]["weak_labels_csv"],
+    split_data = build_strong_validation_split(
         strong_labels_dir=config["data"]["strong_labels_dir"],
         original_audio_dir=config["data"]["original_audio_dir"],
-        negative_data_dir=config["data"].get("negative_data_dir"),
         chunk_sec=float(config["data"]["chunk_sec"]),
-        unclear_label_weight=float(config.get("loss", {}).get("unclear_label_weight", 0.5)),
     )
     val_loader = build_val_loader(config, split_data.val_records, batch_size=args.batch_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

@@ -22,7 +22,13 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, normalize_name, speech_durations_from_records
+from crowd_reaction.data import (
+    WeakChunkDataset,
+    build_strong_validation_split,
+    collate_batch,
+    normalize_name,
+    speech_durations_from_records,
+)
 from crowd_reaction.eval import SpeechChunkPrediction, aggregate_chunk_predictions, contiguous_regions
 from crowd_reaction.model import CrowdReactionModel
 
@@ -428,10 +434,17 @@ def compute_spectrogram(waveform: torch.Tensor, sample_rate: int) -> tuple[np.nd
 
 
 def build_strong_text_index(strong_labels_dir: str) -> dict[str, Path]:
-    return {
-        normalize_name(path.name): path.resolve()
-        for path in sorted(Path(strong_labels_dir).glob("noise_*.txt"))
-    }
+    index: dict[str, Path] = {}
+    for path in sorted(Path(strong_labels_dir).glob("*.txt")):
+        key = normalize_name(path.name)
+        resolved_path = path.resolve()
+        if key in index and index[key] != resolved_path:
+            raise ValueError(
+                "Ambiguous strong label filename normalization for "
+                f"{index[key].name} and {path.name}"
+            )
+        index[key] = resolved_path
+    return index
 
 
 def parse_raw_strong_annotations(strong_txt_path: str) -> dict[str, list[tuple[float, float]]]:
@@ -641,12 +654,10 @@ def main() -> None:
     wandb_run = init_wandb(config, output_dir, run_id=args.run_id, wandb_mode=args.wandb_mode)
     wandb_module = get_wandb_module_if_needed(wandb_run)
 
-    split_data = build_split_records(
-        audios_info_csv=config["data"]["audios_info_csv"],
-        weak_labels_csv=config["data"]["weak_labels_csv"],
+    split_data = build_strong_validation_split(
         strong_labels_dir=config["data"]["strong_labels_dir"],
         original_audio_dir=config["data"]["original_audio_dir"],
-        unclear_label_weight=float(config.get("loss", {}).get("unclear_label_weight", 0.5)),
+        chunk_sec=float(config["data"]["chunk_sec"]),
     )
     strong_text_index = build_strong_text_index(config["data"]["strong_labels_dir"])
     val_loader = build_val_loader(config, split_data.val_records)

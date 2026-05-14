@@ -9,6 +9,7 @@ import torchaudio
 from crowd_reaction.data import (
     WeakChunkDataset,
     build_split_records,
+    build_strong_validation_split,
     collate_batch,
     normalize_name,
     parse_strong_label_file,
@@ -235,6 +236,133 @@ def test_build_split_records_uses_audio_info_for_train_val_partition(tmp_path: P
     assert split_data.val_records[0].split == "val"
     assert split_data.val_records[0].speech_id == "Birth control question booed at CNN Arizona debate"
     assert split_data.train_records[0].speech_id == "Taylor Swift booed at Super Bowl #taylorswift #superbowl ｜ Sports Illustrated"
+
+
+def test_build_split_records_adds_strong_only_files_as_overlapping_val_chunks(tmp_path: Path) -> None:
+    info_path, weak_csv_path, strong_dir, audio_dir = _write_dataset_fixture(tmp_path)
+    strong_only_audio = audio_dir / "Strong only crowd reaction.wav"
+    _write_audio(strong_only_audio, torch.ones(16000 * 36))
+    (strong_dir / "noise_Strong only crowd reaction.txt").write_text(
+        "2.0\t4.0\tclear_approval\n22.0\t24.0\tunclear_disapproval\n",
+        encoding="utf-8",
+    )
+
+    split_data = build_split_records(
+        audios_info_csv=str(info_path),
+        weak_labels_csv=str(weak_csv_path),
+        strong_labels_dir=str(strong_dir),
+        original_audio_dir=str(audio_dir),
+        chunk_sec=20.0,
+    )
+
+    strong_only_records = [
+        record
+        for record in split_data.val_records
+        if record.speech_id == "Strong only crowd reaction"
+    ]
+    assert [(record.chunk_start_sec, record.chunk_end_sec) for record in strong_only_records] == [
+        (0.0, 20.0),
+        (10.0, 30.0),
+        (20.0, 36.0),
+    ]
+    assert all(record.audio_path == str(strong_only_audio.resolve()) for record in strong_only_records)
+    assert all(record.split == "val" for record in strong_only_records)
+    assert all(record.targets.event_mask == 0.0 for record in strong_only_records)
+    assert all(record.targets.approval_mask == 0.0 for record in strong_only_records)
+    assert all(record.targets.disapproval_mask == 0.0 for record in strong_only_records)
+    assert any(event.speech_id == "Strong only crowd reaction" for event in split_data.strong_events_by_task["approval"])
+    assert any(event.speech_id == "Strong only crowd reaction" for event in split_data.strong_events_by_task["disapproval"])
+
+
+def test_build_strong_validation_split_does_not_need_weak_labels(tmp_path: Path) -> None:
+    _, _, strong_dir, audio_dir = _write_dataset_fixture(tmp_path)
+    strong_only_audio = audio_dir / "Strong only crowd reaction.wav"
+    _write_audio(strong_only_audio, torch.ones(16000 * 25))
+    (strong_dir / "noise_Strong only crowd reaction.txt").write_text(
+        "2.0\t4.0\tclear_approval\n",
+        encoding="utf-8",
+    )
+
+    split_data = build_strong_validation_split(
+        strong_labels_dir=str(strong_dir),
+        original_audio_dir=str(audio_dir),
+        chunk_sec=20.0,
+    )
+
+    assert not split_data.train_records
+    records_by_speech = {}
+    for record in split_data.val_records:
+        records_by_speech.setdefault(record.speech_id, []).append(record)
+    assert set(records_by_speech) == {
+        "Birth control question booed at CNN Arizona debate",
+        "Strong only crowd reaction",
+    }
+    assert [(record.chunk_start_sec, record.chunk_end_sec) for record in records_by_speech["Strong only crowd reaction"]] == [
+        (0.0, 20.0),
+        (10.0, 25.0),
+    ]
+    assert any(event.speech_id == "Strong only crowd reaction" for event in split_data.strong_events_by_task["approval"])
+
+
+def test_build_strong_validation_split_accepts_txt_without_noise_prefix(tmp_path: Path) -> None:
+    _, _, strong_dir, audio_dir = _write_dataset_fixture(tmp_path)
+    strong_only_audio = audio_dir / "Plain strong label name.wav"
+    _write_audio(strong_only_audio, torch.ones(16000 * 12))
+    (strong_dir / "Plain strong label name.txt").write_text(
+        "2.0\t4.0\tclear_approval\n",
+        encoding="utf-8",
+    )
+
+    split_data = build_strong_validation_split(
+        strong_labels_dir=str(strong_dir),
+        original_audio_dir=str(audio_dir),
+        chunk_sec=20.0,
+    )
+
+    assert any(record.speech_id == "Plain strong label name" for record in split_data.val_records)
+    assert any(event.speech_id == "Plain strong label name" for event in split_data.strong_events_by_task["approval"])
+
+
+def test_build_strong_validation_split_rejects_ambiguous_txt_names(tmp_path: Path) -> None:
+    _, _, strong_dir, audio_dir = _write_dataset_fixture(tmp_path)
+    _write_audio(audio_dir / "Ambiguous label.wav", torch.ones(16000 * 12))
+    (strong_dir / "Ambiguous label.txt").write_text("2.0\t4.0\tclear_approval\n", encoding="utf-8")
+    (strong_dir / "noise_Ambiguous label.txt").write_text("5.0\t6.0\tclear_disapproval\n", encoding="utf-8")
+
+    try:
+        build_strong_validation_split(
+            strong_labels_dir=str(strong_dir),
+            original_audio_dir=str(audio_dir),
+            chunk_sec=20.0,
+        )
+    except ValueError as exc:
+        assert "Ambiguous strong label filename" in str(exc)
+    else:
+        raise AssertionError("Expected ambiguous strong TXT names to raise ValueError")
+
+
+def test_build_split_records_uses_strong_txt_as_validation_source_of_truth(tmp_path: Path) -> None:
+    info_path, weak_csv_path, strong_dir, audio_dir = _write_dataset_fixture(tmp_path)
+    (strong_dir / "noise_Taylor Swift booed at Super Bowl #taylorswift #superbowl | Sports Illustrated.txt").write_text(
+        "1.0\t2.0\tunclear_approval\n",
+        encoding="utf-8",
+    )
+
+    split_data = build_split_records(
+        audios_info_csv=str(info_path),
+        weak_labels_csv=str(weak_csv_path),
+        strong_labels_dir=str(strong_dir),
+        original_audio_dir=str(audio_dir),
+    )
+
+    assert not split_data.train_records
+    assert {
+        record.speech_id
+        for record in split_data.val_records
+    } == {
+        "Birth control question booed at CNN Arizona debate",
+        "Taylor Swift booed at Super Bowl #taylorswift #superbowl ｜ Sports Illustrated",
+    }
 
 
 def test_build_split_records_loads_audio_from_original_audio_dir(tmp_path: Path) -> None:

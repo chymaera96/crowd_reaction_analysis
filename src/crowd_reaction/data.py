@@ -21,7 +21,7 @@ DISAPPROVAL_LABELS = {
 }
 POSITIVE_EVENT_LABELS = APPROVAL_LABELS | DISAPPROVAL_LABELS | {"crowd_chorus"}
 NEGATIVE_CROWD_LABEL = "no_crowd"
-STRONG_TEXT_GLOB = "noise_*.txt"
+STRONG_TEXT_GLOB = "*.txt"
 SEGMENT_SUFFIX_PATTERN = re.compile(r"_seg\d+$", flags=re.IGNORECASE)
 
 
@@ -288,17 +288,82 @@ def _build_audio_info_index(audios_info_csv: str) -> dict[str, bool]:
     return index
 
 
+def _build_strong_text_index(strong_labels_dir: str) -> dict[str, Path]:
+    index: dict[str, Path] = {}
+    for path in sorted(Path(strong_labels_dir).glob(STRONG_TEXT_GLOB)):
+        key = normalize_name(path.name)
+        resolved_path = path.resolve()
+        if key in index and index[key] != resolved_path:
+            raise ValueError(
+                "Ambiguous strong label filename normalization for "
+                f"{index[key].name} and {path.name}"
+            )
+        index[key] = resolved_path
+    return index
+
+
 def _infer_validation_key(
     source_key: str,
     *,
     audio_info_index: dict[str, bool],
     strong_txt_by_key: dict[str, Path],
 ) -> bool:
-    if source_key in audio_info_index:
-        return bool(audio_info_index[source_key])
     if source_key in strong_txt_by_key:
         return True
+    if source_key in audio_info_index:
+        return bool(audio_info_index[source_key])
     return False
+
+
+def _unlabeled_targets() -> WeakBagTargets:
+    return weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 0,
+                "unclear_disapproval": 0,
+                "unclear_approval": 0,
+                "clear_approval": 0,
+                "no_crowd": 0,
+                "crowd_chorus": 0,
+            }
+        )
+    )
+
+
+def chunk_records_for_strong_audio(
+    *,
+    audio_path: Path,
+    chunk_sec: float,
+    split: str = "val",
+) -> list[WeakChunkRecord]:
+    audio_info = torchaudio.info(str(audio_path))
+    duration_sec = float(audio_info.num_frames) / float(audio_info.sample_rate)
+    if duration_sec <= 0.0:
+        duration_sec = float(chunk_sec)
+
+    stride_sec = float(chunk_sec) / 2.0
+    if stride_sec <= 0.0:
+        raise ValueError("chunk_sec must be positive")
+
+    targets = _unlabeled_targets()
+    records: list[WeakChunkRecord] = []
+    start_sec = 0.0
+    while True:
+        end_sec = min(start_sec + float(chunk_sec), duration_sec)
+        records.append(
+            WeakChunkRecord(
+                audio_path=str(audio_path.resolve()),
+                speech_id=audio_path.stem,
+                chunk_start_sec=float(start_sec),
+                chunk_end_sec=float(end_sec),
+                targets=targets,
+                split=split,
+            )
+        )
+        if end_sec >= duration_sec:
+            break
+        start_sec += stride_sec
+    return records
 
 
 def parse_strong_label_file(strong_txt_path: str, speech_id: str) -> list[StrongEvent]:
@@ -364,6 +429,45 @@ def parse_strong_label_file_by_task(strong_txt_path: str, speech_id: str) -> dic
     return events_by_task
 
 
+def build_strong_validation_split(
+    *,
+    strong_labels_dir: str,
+    original_audio_dir: str,
+    chunk_sec: float = 20.0,
+) -> SplitDatasets:
+    original_audio_index = _build_original_audio_index(original_audio_dir)
+    strong_txt_by_key = _build_strong_text_index(strong_labels_dir)
+
+    val_records: list[WeakChunkRecord] = []
+    strong_events_by_task: dict[str, list[StrongEvent]] = {
+        "event": [],
+        "approval": [],
+        "disapproval": [],
+    }
+
+    for source_key, strong_txt_path in strong_txt_by_key.items():
+        audio_path = original_audio_index.get(source_key)
+        if audio_path is None:
+            raise ValueError(f"Strong label file {strong_txt_path.name} does not match any original audio file")
+        val_records.extend(
+            chunk_records_for_strong_audio(
+                audio_path=audio_path,
+                chunk_sec=chunk_sec,
+                split="val",
+            )
+        )
+        parsed_events = parse_strong_label_file_by_task(str(strong_txt_path), speech_id=audio_path.stem)
+        for task_name, task_events in parsed_events.items():
+            strong_events_by_task[task_name].extend(task_events)
+
+    return SplitDatasets(
+        train_records=[],
+        val_records=val_records,
+        strong_events=strong_events_by_task["event"],
+        strong_events_by_task=strong_events_by_task,
+    )
+
+
 def build_split_records(
     *,
     audios_info_csv: str,
@@ -393,10 +497,7 @@ def build_split_records(
     if missing:
         raise ValueError(f"Missing columns in {weak_labels_csv}: {missing}")
 
-    strong_txt_by_key = {
-        normalize_name(path.name): path.resolve()
-        for path in sorted(Path(strong_labels_dir).glob(STRONG_TEXT_GLOB))
-    }
+    strong_txt_by_key = _build_strong_text_index(strong_labels_dir)
 
     train_records: list[WeakChunkRecord] = []
     val_records: list[WeakChunkRecord] = []
@@ -425,6 +526,21 @@ def build_split_records(
             validation_speech_ids[source_key] = audio_path
         else:
             train_records.append(record)
+
+    for source_key, strong_txt_path in strong_txt_by_key.items():
+        if source_key in validation_speech_ids:
+            continue
+        audio_path = original_audio_index.get(source_key)
+        if audio_path is None:
+            raise ValueError(f"Strong label file {strong_txt_path.name} does not match any original audio file")
+        val_records.extend(
+            chunk_records_for_strong_audio(
+                audio_path=audio_path,
+                chunk_sec=chunk_sec,
+                split="val",
+            )
+        )
+        validation_speech_ids[source_key] = audio_path
 
     if negative_data_dir:
         negative_dir = Path(negative_data_dir)
