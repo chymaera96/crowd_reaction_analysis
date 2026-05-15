@@ -34,7 +34,8 @@ python scripts/api.py \
   --config configs/wav2vec2.yaml \
   --checkpoint outputs/w2v_tc1_alt/best_segment_f1.pt \
   --audio /path/to/input.wav \
-  --output-dir api_outputs/example
+  --output-dir api_outputs/example \
+  --batch-size 1
 ```
 
 This writes:
@@ -65,6 +66,8 @@ plot_inference_result(result, "api_outputs/example/plot.png")
 
 The approval and disapproval score functions are already event-conditioned, matching the plotted functions from `scripts/infer.py`.
 The returned `result` can be edited before plotting if you want to alter the score functions or predicted regions.
+The API defaults to CPU for portability. Use `--batch-size 1` or `--batch-size 2` on a laptop, and pass `--device cuda`, `--device cuda:0`, or `--device mps` only when that accelerator is available and working in your environment.
+Pass `--no-score-functions` to hide the probability curves and threshold lines in `plot.png`, leaving only the spectrogram and prediction/annotation spans.
 
 Dataset inputs:
 - `data/audios_info.csv` decides which source files are strong-labeled and therefore validation-only

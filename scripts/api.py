@@ -48,12 +48,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=None, help="Override inference batch size")
     parser.add_argument("--device", default=None, help="Torch device string, e.g. cuda, cuda:0, or cpu")
     parser.add_argument("--annotations", default=None, help="Optional strong-label TXT annotations to overlay on the plot")
+    parser.add_argument(
+        "--no-score-functions",
+        action="store_true",
+        help="Hide probability score functions and threshold lines from plot.png",
+    )
     return parser.parse_args()
 
 
 def _resolve_device(device: str | torch.device | None) -> torch.device:
     if device is None:
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return torch.device("cpu")
     return torch.device(device)
 
 
@@ -210,6 +215,8 @@ def plot_inference_result(
     result: InferenceResult,
     output_path: str | Path,
     annotations: dict[str, list[tuple[float, float]]] | None = None,
+    *,
+    plot_score_functions: bool = True,
 ) -> None:
     audio_info = torchaudio.info(result.audio_path)
     infer_utils.plot_speech(
@@ -224,6 +231,7 @@ def plot_inference_result(
         event_threshold=float(result.event_threshold),
         attribute_threshold=float(result.attribute_threshold),
         output_path=Path(output_path),
+        plot_score_functions=plot_score_functions,
     )
 
 
@@ -235,6 +243,7 @@ def _plot_inference_result_with_config(
     annotations: dict[str, list[tuple[float, float]]] | None,
     event_threshold: float,
     attribute_threshold: float,
+    plot_score_functions: bool,
 ) -> None:
     infer_utils.plot_speech(
         audio_path=result.audio_path,
@@ -248,6 +257,7 @@ def _plot_inference_result_with_config(
         event_threshold=float(event_threshold),
         attribute_threshold=float(attribute_threshold),
         output_path=output_path,
+        plot_score_functions=plot_score_functions,
     )
 
 
@@ -288,6 +298,7 @@ def main() -> None:
         annotations=annotations,
         event_threshold=event_threshold,
         attribute_threshold=attribute_threshold,
+        plot_score_functions=not args.no_score_functions,
     )
     print(f"Saved {scores_path}")
     print(f"Saved {segments_path}")

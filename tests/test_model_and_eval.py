@@ -613,6 +613,7 @@ def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
             "input.wav",
             "--output-dir",
             "api_outputs/example",
+            "--no-score-functions",
         ],
     )
 
@@ -622,3 +623,4 @@ def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.checkpoint == "outputs/run/best_segment_f1.pt"
     assert args.audio == "input.wav"
     assert args.output_dir == "api_outputs/example"
+    assert args.no_score_functions is True

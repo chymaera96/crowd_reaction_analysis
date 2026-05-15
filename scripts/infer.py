@@ -547,6 +547,7 @@ def plot_speech(
     event_threshold: float,
     attribute_threshold: float,
     output_path: Path,
+    plot_score_functions: bool = True,
 ) -> None:
     waveform, sr = torchaudio.load(audio_path)
     if sr != sample_rate:
@@ -577,43 +578,6 @@ def plot_speech(
         instance_sec=instance_sec,
     )
 
-    score_ax = ax.twinx()
-    num_steps = predicted_probs.shape[0]
-    centers = (np.arange(num_steps, dtype=np.float32) + 0.5) * float(instance_sec)
-    for label_name in ("relevant_event", "approval", "disapproval"):
-        if label_name not in label_names:
-            continue
-        class_index = label_names.index(label_name)
-        linewidth = 1.75 if label_name == "relevant_event" else 1.25
-        score_ax.plot(
-            centers,
-            predicted_probs[:, class_index],
-            color=SCORE_LINE_COLORS[label_name],
-            linewidth=linewidth,
-            alpha=0.95,
-            drawstyle="steps-mid",
-            label=f"Score {label_name}",
-        )
-    score_ax.axhline(
-        event_threshold,
-        color=SCORE_LINE_COLORS["relevant_event"],
-        linestyle="--",
-        linewidth=1.0,
-        alpha=0.55,
-        label="Event threshold",
-    )
-    score_ax.axhline(
-        attribute_threshold,
-        color="#444444",
-        linestyle=":",
-        linewidth=1.0,
-        alpha=0.65,
-        label="Approval/disapproval threshold",
-    )
-    score_ax.set_ylim(0.0, 1.0)
-    score_ax.set_ylabel("Predicted probability")
-    score_ax.grid(False)
-
     ax.set_title(
         f"{truncate_plot_title(speech_id)} | event={event_threshold:.2f} | attr={attribute_threshold:.2f}"
     )
@@ -621,9 +585,48 @@ def plot_speech(
     ax.set_ylabel("Frequency (Hz)")
     ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
     ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
-    score_ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
     handles_a, labels_a = ax.get_legend_handles_labels()
-    handles_b, labels_b = score_ax.get_legend_handles_labels()
+    handles_b: list[Any] = []
+    labels_b: list[str] = []
+    if plot_score_functions:
+        score_ax = ax.twinx()
+        num_steps = predicted_probs.shape[0]
+        centers = (np.arange(num_steps, dtype=np.float32) + 0.5) * float(instance_sec)
+        for label_name in ("relevant_event", "approval", "disapproval"):
+            if label_name not in label_names:
+                continue
+            class_index = label_names.index(label_name)
+            linewidth = 1.75 if label_name == "relevant_event" else 1.25
+            score_ax.plot(
+                centers,
+                predicted_probs[:, class_index],
+                color=SCORE_LINE_COLORS[label_name],
+                linewidth=linewidth,
+                alpha=0.95,
+                drawstyle="steps-mid",
+                label=f"Score {label_name}",
+            )
+        score_ax.axhline(
+            event_threshold,
+            color=SCORE_LINE_COLORS["relevant_event"],
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.55,
+            label="Event threshold",
+        )
+        score_ax.axhline(
+            attribute_threshold,
+            color="#444444",
+            linestyle=":",
+            linewidth=1.0,
+            alpha=0.65,
+            label="Approval/disapproval threshold",
+        )
+        score_ax.set_ylim(0.0, 1.0)
+        score_ax.set_ylabel("Predicted probability")
+        score_ax.grid(False)
+        score_ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
+        handles_b, labels_b = score_ax.get_legend_handles_labels()
     ax.legend(handles_a + handles_b, labels_a + labels_b, loc="lower right", ncol=2, fontsize=9)
     fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
