@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
+import sys
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -32,6 +34,13 @@ _RESULTS_SPEC = importlib.util.spec_from_file_location("crowd_reaction_results",
 assert _RESULTS_SPEC is not None and _RESULTS_SPEC.loader is not None
 results_module = importlib.util.module_from_spec(_RESULTS_SPEC)
 _RESULTS_SPEC.loader.exec_module(results_module)
+
+_API_PATH = Path(__file__).resolve().parents[1] / "scripts" / "api.py"
+_API_SPEC = importlib.util.spec_from_file_location("crowd_reaction_api", _API_PATH)
+assert _API_SPEC is not None and _API_SPEC.loader is not None
+api_module = importlib.util.module_from_spec(_API_SPEC)
+sys.modules[_API_SPEC.name] = api_module
+_API_SPEC.loader.exec_module(api_module)
 
 
 class DummyWav2Vec2StyleFeatureExtractor(torch.nn.Module):
@@ -511,3 +520,105 @@ def test_infer_ground_truth_regions_export_only_approval_disapproval() -> None:
 def test_infer_formats_time_as_mmss() -> None:
     assert infer_module.format_seconds_mmss(0.0) == "00:00"
     assert infer_module.format_seconds_mmss(65.1) == "01:05"
+
+
+def test_api_scores_json_uses_class_keyed_lists(tmp_path: Path) -> None:
+    result = api_module.InferenceResult(
+        audio_path="example.wav",
+        instance_sec=1.0,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        label_names=("relevant_event", "approval", "disapproval"),
+        times_sec=np.array([0.5, 1.5], dtype=np.float32),
+        scores=np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.6]], dtype=np.float32),
+        predicted_regions=[],
+    )
+
+    output_path = tmp_path / "scores.json"
+    api_module.write_scores_json(result, output_path)
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert list(payload) == ["relevant_event", "approval", "disapproval"]
+    assert payload["relevant_event"] == [0.10000000149011612, 0.4000000059604645]
+    assert payload["approval"] == [0.20000000298023224, 0.5]
+    assert payload["disapproval"] == [0.30000001192092896, 0.6000000238418579]
+
+
+def test_api_predicted_segments_csv_uses_end_timestamp(tmp_path: Path) -> None:
+    result = api_module.InferenceResult(
+        audio_path="example.wav",
+        instance_sec=1.0,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        label_names=("relevant_event", "approval", "disapproval"),
+        times_sec=np.array([0.5, 1.5, 2.5], dtype=np.float32),
+        scores=np.zeros((3, 3), dtype=np.float32),
+        predicted_regions=[(2.0, 5.0, "approval"), (10.0, 11.5, "disapproval")],
+    )
+
+    output_path = tmp_path / "predicted_segments.csv"
+    api_module.write_predicted_segments_csv(result, output_path)
+
+    assert output_path.read_text(encoding="utf-8") == (
+        "start_sec,end_sec,label\n"
+        "2.000000,5.000000,approval\n"
+        "10.000000,11.500000,disapproval\n"
+    )
+
+
+def test_api_region_thresholding_matches_infer_event_gating() -> None:
+    scores = np.array(
+        [
+            [0.2, 0.9, 0.9],
+            [0.8, 0.6, 0.4],
+            [0.8, 0.4, 0.6],
+        ],
+        dtype=np.float32,
+    )
+
+    regions = infer_module.predicted_regions_from_probs(
+        scores,
+        label_names=["relevant_event", "approval", "disapproval"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=1.0,
+    )
+    result = api_module.InferenceResult(
+        audio_path="example.wav",
+        instance_sec=1.0,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        label_names=("relevant_event", "approval", "disapproval"),
+        times_sec=np.array([0.5, 1.5, 2.5], dtype=np.float32),
+        scores=scores,
+        predicted_regions=regions,
+    )
+
+    assert result.predicted_regions == [
+        (1.0, 2.0, "approval"),
+        (2.0, 3.0, "disapproval"),
+    ]
+
+
+def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "api.py",
+            "--config",
+            "configs/wav2vec2.yaml",
+            "--checkpoint",
+            "outputs/run/best_segment_f1.pt",
+            "--audio",
+            "input.wav",
+            "--output-dir",
+            "api_outputs/example",
+        ],
+    )
+
+    args = api_module.parse_args()
+
+    assert args.config == "configs/wav2vec2.yaml"
+    assert args.checkpoint == "outputs/run/best_segment_f1.pt"
+    assert args.audio == "input.wav"
+    assert args.output_dir == "api_outputs/example"

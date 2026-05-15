@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import csv
+import json
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import torch
+import torchaudio
+from torch.utils.data import DataLoader
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+SCRIPTS = ROOT / "scripts"
+for path in (SRC, SCRIPTS):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
+
+import infer as infer_utils  # noqa: E402
+from crowd_reaction.data import WeakChunkDataset, chunk_records_for_strong_audio, collate_batch  # noqa: E402
+
+
+@dataclass
+class InferenceResult:
+    audio_path: str
+    instance_sec: float
+    event_threshold: float
+    attribute_threshold: float
+    label_names: tuple[str, ...]
+    times_sec: np.ndarray
+    scores: np.ndarray
+    predicted_regions: list[tuple[float, float, str]]
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run crowd-reaction inference on one audio file")
+    parser.add_argument("--config", required=True, help="Path to YAML config")
+    parser.add_argument("--checkpoint", required=True, help="Path to trained model checkpoint")
+    parser.add_argument("--audio", required=True, help="Input audio file")
+    parser.add_argument("--output-dir", required=True, help="Directory to save API outputs")
+    parser.add_argument("--event-threshold", type=float, default=None, help="Override relevant-event probability threshold")
+    parser.add_argument("--attribute-threshold", type=float, default=None, help="Override approval/disapproval probability threshold")
+    parser.add_argument("--batch-size", type=int, default=None, help="Override inference batch size")
+    parser.add_argument("--device", default=None, help="Torch device string, e.g. cuda, cuda:0, or cpu")
+    parser.add_argument("--annotations", default=None, help="Optional strong-label TXT annotations to overlay on the plot")
+    return parser.parse_args()
+
+
+def _resolve_device(device: str | torch.device | None) -> torch.device:
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return torch.device(device)
+
+
+def _thresholds_from_config(
+    config: dict[str, Any],
+    *,
+    event_threshold: float | None,
+    attribute_threshold: float | None,
+) -> tuple[float, float]:
+    resolved_event_threshold = (
+        float(event_threshold)
+        if event_threshold is not None
+        else float(config["val"].get("event_threshold", infer_utils.sigmoid(infer_utils.DEFAULT_EVENT_LOGIT_THRESHOLD)))
+    )
+    resolved_attribute_threshold = (
+        float(attribute_threshold)
+        if attribute_threshold is not None
+        else float(config["val"].get("attribute_threshold", config["val"].get("threshold", 0.5)))
+    )
+    return resolved_event_threshold, resolved_attribute_threshold
+
+
+def _build_single_audio_loader(
+    *,
+    audio_path: Path,
+    config: dict[str, Any],
+    batch_size: int | None,
+) -> tuple[DataLoader, float]:
+    records = chunk_records_for_strong_audio(
+        audio_path=audio_path,
+        chunk_sec=float(config["data"]["chunk_sec"]),
+        split="infer",
+    )
+    dataset = WeakChunkDataset(
+        records,
+        sample_rate=int(config["data"]["sample_rate"]),
+        chunk_sec=float(config["data"]["chunk_sec"]),
+        instance_sec=float(config["data"]["instance_sec"]),
+    )
+    audio_info = torchaudio.info(str(audio_path))
+    audio_duration_sec = float(audio_info.num_frames) / float(audio_info.sample_rate)
+    loader = DataLoader(
+        dataset,
+        batch_size=int(batch_size or config["val"].get("batch_size", 4)),
+        shuffle=False,
+        num_workers=int(config["val"].get("num_workers", 0)),
+        collate_fn=collate_batch,
+    )
+    return loader, audio_duration_sec
+
+
+def _scores_with_fixed_label_order(
+    aggregated_scores: np.ndarray,
+    active_label_names: list[str],
+    *,
+    num_bins: int,
+) -> np.ndarray:
+    fixed_scores = np.zeros((num_bins, len(infer_utils.PLOTTED_LABEL_ORDER)), dtype=np.float32)
+    for output_index, label_name in enumerate(infer_utils.PLOTTED_LABEL_ORDER):
+        if label_name not in active_label_names:
+            continue
+        input_index = active_label_names.index(label_name)
+        copy_bins = min(num_bins, aggregated_scores.shape[0])
+        fixed_scores[:copy_bins, output_index] = aggregated_scores[:copy_bins, input_index]
+    return fixed_scores
+
+
+def run_audio_inference(
+    audio_path: str | Path,
+    config_path: str | Path,
+    checkpoint_path: str | Path,
+    event_threshold: float | None = None,
+    attribute_threshold: float | None = None,
+    batch_size: int | None = None,
+    device: str | torch.device | None = None,
+) -> InferenceResult:
+    audio_path = Path(audio_path)
+    config = infer_utils.load_config(str(config_path))
+    resolved_device = _resolve_device(device)
+    resolved_event_threshold, resolved_attribute_threshold = _thresholds_from_config(
+        config,
+        event_threshold=event_threshold,
+        attribute_threshold=attribute_threshold,
+    )
+    loader, audio_duration_sec = _build_single_audio_loader(
+        audio_path=audio_path,
+        config=config,
+        batch_size=batch_size,
+    )
+    model = infer_utils.load_model(config, str(checkpoint_path), resolved_device)
+    chunk_predictions_by_task = infer_utils.collect_multitask_chunk_predictions(model, loader, device=resolved_device)
+    active_label_names = infer_utils.active_label_order(chunk_predictions_by_task)
+    aggregated_by_speech = infer_utils.aggregate_multitask_probs(
+        chunk_predictions_by_task,
+        instance_sec=float(config["data"]["instance_sec"]),
+        speech_durations={audio_path.stem: audio_duration_sec},
+    )
+    aggregated_scores = aggregated_by_speech.get(audio_path.stem)
+    instance_sec = float(config["data"]["instance_sec"])
+    num_bins = int(np.ceil(audio_duration_sec / instance_sec))
+    if aggregated_scores is None:
+        aggregated_scores = np.zeros((num_bins, 0), dtype=np.float32)
+    scores = _scores_with_fixed_label_order(
+        aggregated_scores,
+        active_label_names,
+        num_bins=num_bins,
+    )
+    label_names = tuple(infer_utils.PLOTTED_LABEL_ORDER)
+    predicted_regions = infer_utils.predicted_regions_from_probs(
+        scores,
+        label_names=list(label_names),
+        event_threshold=resolved_event_threshold,
+        attribute_threshold=resolved_attribute_threshold,
+        instance_sec=instance_sec,
+    )
+    times_sec = (np.arange(num_bins, dtype=np.float32) + 0.5) * instance_sec
+    return InferenceResult(
+        audio_path=str(audio_path),
+        instance_sec=instance_sec,
+        event_threshold=resolved_event_threshold,
+        attribute_threshold=resolved_attribute_threshold,
+        label_names=label_names,
+        times_sec=times_sec,
+        scores=scores,
+        predicted_regions=predicted_regions,
+    )
+
+
+def scores_as_dict(result: InferenceResult) -> dict[str, list[float]]:
+    return {
+        label_name: [float(value) for value in result.scores[:, label_index]]
+        for label_index, label_name in enumerate(result.label_names)
+    }
+
+
+def write_scores_json(result: InferenceResult, output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8") as handle:
+        json.dump(scores_as_dict(result), handle, indent=2)
+
+
+def write_predicted_segments_csv(result: InferenceResult, output_path: str | Path) -> None:
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["start_sec", "end_sec", "label"])
+        for start_sec, end_sec, label in result.predicted_regions:
+            writer.writerow([f"{float(start_sec):.6f}", f"{float(end_sec):.6f}", label])
+
+
+def plot_inference_result(
+    result: InferenceResult,
+    output_path: str | Path,
+    annotations: dict[str, list[tuple[float, float]]] | None = None,
+) -> None:
+    audio_info = torchaudio.info(result.audio_path)
+    infer_utils.plot_speech(
+        audio_path=result.audio_path,
+        speech_id=Path(result.audio_path).stem,
+        predicted_probs=result.scores,
+        predicted_regions=result.predicted_regions,
+        label_names=list(result.label_names),
+        ground_truth_annotations=annotations or {},
+        sample_rate=int(audio_info.sample_rate),
+        instance_sec=float(result.instance_sec),
+        event_threshold=float(result.event_threshold),
+        attribute_threshold=float(result.attribute_threshold),
+        output_path=Path(output_path),
+    )
+
+
+def _plot_inference_result_with_config(
+    result: InferenceResult,
+    output_path: Path,
+    *,
+    config: dict[str, Any],
+    annotations: dict[str, list[tuple[float, float]]] | None,
+    event_threshold: float,
+    attribute_threshold: float,
+) -> None:
+    infer_utils.plot_speech(
+        audio_path=result.audio_path,
+        speech_id=Path(result.audio_path).stem,
+        predicted_probs=result.scores,
+        predicted_regions=result.predicted_regions,
+        label_names=list(result.label_names),
+        ground_truth_annotations=annotations or {},
+        sample_rate=int(config["data"]["sample_rate"]),
+        instance_sec=float(result.instance_sec),
+        event_threshold=float(event_threshold),
+        attribute_threshold=float(attribute_threshold),
+        output_path=output_path,
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    config = infer_utils.load_config(args.config)
+    event_threshold, attribute_threshold = _thresholds_from_config(
+        config,
+        event_threshold=args.event_threshold,
+        attribute_threshold=args.attribute_threshold,
+    )
+    result = run_audio_inference(
+        audio_path=args.audio,
+        config_path=args.config,
+        checkpoint_path=args.checkpoint,
+        event_threshold=event_threshold,
+        attribute_threshold=attribute_threshold,
+        batch_size=args.batch_size,
+        device=args.device,
+    )
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    annotations = (
+        infer_utils.parse_raw_strong_annotations(str(args.annotations))
+        if args.annotations is not None
+        else None
+    )
+    scores_path = output_dir / "scores.json"
+    segments_path = output_dir / "predicted_segments.csv"
+    plot_path = output_dir / "plot.png"
+    write_scores_json(result, scores_path)
+    write_predicted_segments_csv(result, segments_path)
+    _plot_inference_result_with_config(
+        result,
+        plot_path,
+        config=config,
+        annotations=annotations,
+        event_threshold=event_threshold,
+        attribute_threshold=attribute_threshold,
+    )
+    print(f"Saved {scores_path}")
+    print(f"Saved {segments_path}")
+    print(f"Saved {plot_path}")
+
+
+if __name__ == "__main__":
+    main()

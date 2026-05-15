@@ -20,9 +20,51 @@ Main entrypoints:
 - `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_1hz --wandb-mode disabled`
 - `scripts/results.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_1hz/best_segment_f1.pt`
 - `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_segment_f1.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
+- `scripts/api.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_1hz/best_segment_f1.pt --audio /path/to/audio.wav --output-dir api_outputs/example`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs/wav2vec2 + temporal classifier heads
 - `src/crowd_reaction/eval.py` for weak metrics plus `sed_eval`-based segment and event validation
+
+## API usage
+
+Run a trained checkpoint on one audio file:
+
+```bash
+python scripts/api.py \
+  --config configs/wav2vec2.yaml \
+  --checkpoint outputs/w2v_tc1_alt/best_segment_f1.pt \
+  --audio /path/to/input.wav \
+  --output-dir api_outputs/example
+```
+
+This writes:
+- `scores.json`: a dictionary with `relevant_event`, `approval`, and `disapproval` score lists
+- `predicted_segments.csv`: `start_sec,end_sec,label`, where `end_sec` is an ending timestamp
+- `plot.png`: the same spectrogram and score plot style used by `scripts/infer.py`
+
+Python usage:
+
+```python
+from scripts.api import (
+    plot_inference_result,
+    run_audio_inference,
+    write_predicted_segments_csv,
+    write_scores_json,
+)
+
+result = run_audio_inference(
+    audio_path="/path/to/input.wav",
+    config_path="configs/wav2vec2.yaml",
+    checkpoint_path="outputs/w2v_tc1_alt/best_segment_f1.pt",
+)
+
+write_scores_json(result, "api_outputs/example/scores.json")
+write_predicted_segments_csv(result, "api_outputs/example/predicted_segments.csv")
+plot_inference_result(result, "api_outputs/example/plot.png")
+```
+
+The approval and disapproval score functions are already event-conditioned, matching the plotted functions from `scripts/infer.py`.
+The returned `result` can be edited before plotting if you want to alter the score functions or predicted regions.
 
 Dataset inputs:
 - `data/audios_info.csv` decides which source files are strong-labeled and therefore validation-only
