@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 import torch
 import torchaudio
@@ -253,6 +254,82 @@ def split_into_instances(
     if num_instances * instance_samples != expected_samples:
         raise ValueError("chunk_sec must be divisible by instance_sec")
     return chunk_waveform.view(num_instances, instance_samples)
+
+
+def build_audio_augmentation(augmentation_config: dict[str, Any] | None):
+    if not augmentation_config or not bool(augmentation_config.get("enabled", False)):
+        return None
+
+    lowpass_config = augmentation_config.get("lowpass", {})
+    pink_noise_config = augmentation_config.get("pink_noise", {})
+    clipping_config = augmentation_config.get("clipping", {})
+    if (
+        float(lowpass_config.get("p", 0.0)) <= 0.0
+        and float(pink_noise_config.get("p", 0.0)) <= 0.0
+        and float(clipping_config.get("p", 0.0)) <= 0.0
+    ):
+        return None
+
+    try:
+        from audiomentations import AddColorNoise, ClippingDistortion, Compose, LowPassFilter
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Audio augmentation is enabled, but `audiomentations` is not installed. "
+            "Install project dependencies or set augmentation.enabled=false."
+        ) from exc
+
+    transforms = []
+    if float(lowpass_config.get("p", 0.0)) > 0.0:
+        transforms.append(
+            LowPassFilter(
+                min_cutoff_freq=float(lowpass_config.get("cutoff_min_hz", 3500.0)),
+                max_cutoff_freq=float(lowpass_config.get("cutoff_max_hz", 7500.0)),
+                p=float(lowpass_config.get("p", 0.5)),
+            )
+        )
+
+    if float(pink_noise_config.get("p", 0.0)) > 0.0:
+        transforms.append(
+            AddColorNoise(
+                min_snr_db=float(pink_noise_config.get("snr_min_db", 5.0)),
+                max_snr_db=float(pink_noise_config.get("snr_max_db", 25.0)),
+                min_f_decay=-3.01,
+                max_f_decay=-3.01,
+                p=float(pink_noise_config.get("p", 0.5)),
+            )
+        )
+
+    if float(clipping_config.get("p", 0.0)) > 0.0:
+        transforms.append(
+            ClippingDistortion(
+                min_percentile_threshold=int(clipping_config.get("min_percentile_threshold", 0)),
+                max_percentile_threshold=int(clipping_config.get("max_percentile_threshold", 20)),
+                p=float(clipping_config.get("p", 0.3)),
+            )
+        )
+
+    if not transforms:
+        return None
+    return Compose(transforms)
+
+
+def apply_audio_augmentation(
+    waveform: torch.Tensor,
+    augmentation,
+    *,
+    sample_rate: int,
+) -> torch.Tensor:
+    if augmentation is None:
+        return waveform
+    original_num_samples = int(waveform.numel())
+    samples = waveform.detach().cpu().numpy().astype(np.float32, copy=True)
+    augmented = np.asarray(augmentation(samples=samples, sample_rate=int(sample_rate)), dtype=np.float32).reshape(-1)
+    if augmented.shape[0] >= original_num_samples:
+        augmented = augmented[:original_num_samples]
+    else:
+        augmented = np.pad(augmented, (0, original_num_samples - augmented.shape[0]), mode="constant")
+    augmented = np.nan_to_num(augmented, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32, copy=False)
+    return torch.from_numpy(augmented).to(device=waveform.device, dtype=waveform.dtype)
 
 
 def _truthy_strong_label(value: Any) -> bool:
@@ -606,12 +683,14 @@ class WeakChunkDataset(torch.utils.data.Dataset):
         chunk_sec: float = 20.0,
         instance_sec: float = 1.0,
         num_classes: int = 1,
+        augmentation_config: dict[str, Any] | None = None,
     ) -> None:
         self.sample_rate = int(sample_rate)
         self.chunk_sec = float(chunk_sec)
         self.instance_sec = float(instance_sec)
         self.num_classes = int(num_classes)
         self.records = list(records)
+        self.augmentation = build_audio_augmentation(augmentation_config)
         self.chunk_num_samples = seconds_to_samples(self.chunk_sec, self.sample_rate)
         self.instances_per_chunk = int(round(self.chunk_sec / self.instance_sec))
         if self.instances_per_chunk * seconds_to_samples(self.instance_sec, self.sample_rate) != self.chunk_num_samples:
@@ -630,6 +709,7 @@ class WeakChunkDataset(torch.utils.data.Dataset):
             sample_rate=self.sample_rate,
             target_num_samples=self.chunk_num_samples,
         )
+        chunk = apply_audio_augmentation(chunk, self.augmentation, sample_rate=self.sample_rate)
         instances = split_into_instances(
             chunk,
             sample_rate=self.sample_rate,

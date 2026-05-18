@@ -18,6 +18,21 @@ data:
   chunk_sec: 20.0
   instance_sec: 1.0
 
+augmentation:
+  enabled: true
+  lowpass:
+    p: 0.5
+    cutoff_min_hz: 3500
+    cutoff_max_hz: 7500
+  pink_noise:
+    p: 0.5
+    snr_min_db: 5.0
+    snr_max_db: 25.0
+  clipping:
+    p: 0.3
+    min_percentile_threshold: 0
+    max_percentile_threshold: 20
+
 model:
   encoder_type: beats
   beats_checkpoint_path: /data/home/acw723/crowd_reaction_analysis/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt

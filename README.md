@@ -17,10 +17,10 @@ If you want Weights & Biases logging:
 
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
-- `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_1hz --wandb-mode disabled`
-- `scripts/results.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_1hz/best_segment_f1.pt`
+- `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_2hz --wandb-mode disabled`
+- `scripts/results.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_2hz/best_segment_f1.pt`
 - `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_segment_f1.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
-- `scripts/api.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_1hz/best_segment_f1.pt --audio /path/to/audio.wav --output-dir api_outputs/example`
+- `scripts/api.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_2hz/best_segment_f1.pt --audio /path/to/audio.wav --output-dir api_outputs/example`
 - `src/crowd_reaction/data.py` for metadata loading and chunk slicing
 - `src/crowd_reaction/model.py` for frozen BEATs/wav2vec2 + temporal classifier heads
 - `src/crowd_reaction/eval.py` for weak metrics plus `sed_eval`-based segment and event validation
@@ -99,8 +99,9 @@ Weak targets:
 
 Encoder configs:
 - `configs/default.yaml` uses frozen BEATs with conditional attribute MIL and `data.instance_sec: 1.0`
-- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, conditional attribute MIL, and `data.instance_sec: 1.0`
-- both configs use `loss.unclear_label_weight: 0.75` and produce 1 Hz logits
+- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, conditional attribute MIL, and `data.instance_sec: 0.5`
+- both configs use `loss.unclear_label_weight: 0.75`; BEATs produces 1 Hz logits and wav2vec2 produces 2 Hz logits
+- train-time waveform augmentation uses `audiomentations` for random lowpass filtering, pink noise, and clipping distortion; validation, results, inference, and API audio are not augmented
 
 Strong validation uses `sed_eval`:
 - all strong crowd-like labels collapse to a single positive `crowd` event class

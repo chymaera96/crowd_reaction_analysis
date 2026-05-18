@@ -70,12 +70,20 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
 
 
-def build_dataloader(data_config: dict[str, Any], loader_config: dict[str, Any], records, shuffle: bool) -> DataLoader:
+def build_dataloader(
+    data_config: dict[str, Any],
+    loader_config: dict[str, Any],
+    records,
+    shuffle: bool,
+    *,
+    augmentation_config: dict[str, Any] | None = None,
+) -> DataLoader:
     dataset = WeakChunkDataset(
         records,
         sample_rate=int(data_config["sample_rate"]),
         chunk_sec=float(data_config["chunk_sec"]),
         instance_sec=float(data_config["instance_sec"]),
+        augmentation_config=augmentation_config,
     )
     return DataLoader(
         dataset,
@@ -312,7 +320,13 @@ def main() -> None:
         unclear_label_weight=float(config.get("loss", {}).get("unclear_label_weight", 0.5)),
     )
 
-    train_loader = build_dataloader(config["data"], config["train"], split_datasets.train_records, shuffle=True)
+    train_loader = build_dataloader(
+        config["data"],
+        config["train"],
+        split_datasets.train_records,
+        shuffle=True,
+        augmentation_config=config.get("augmentation"),
+    )
     val_loader = build_dataloader(config["data"], config["val"], split_datasets.val_records, shuffle=False)
 
     model = CrowdReactionModel(

@@ -16,7 +16,22 @@ data:
   negative_data_dir: /gpfs/scratch/acw723/data/negative_data
   sample_rate: 16000
   chunk_sec: 20.0
-  instance_sec: 1.0
+  instance_sec: 0.5
+
+augmentation:
+  enabled: true
+  lowpass:
+    p: 0.5
+    cutoff_min_hz: 3500
+    cutoff_max_hz: 7500
+  pink_noise:
+    p: 0.5
+    snr_min_db: 5.0
+    snr_max_db: 25.0
+  clipping:
+    p: 0.3
+    min_percentile_threshold: 0
+    max_percentile_threshold: 20
 
 model:
   encoder_type: wav2vec2

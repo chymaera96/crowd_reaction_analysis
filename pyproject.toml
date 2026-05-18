@@ -9,6 +9,7 @@ description = "Weakly supervised crowd reaction SED with frozen BEATs"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+  "audiomentations>=0.35.0",
   "dcase_util>=0.2.20",
   "matplotlib>=3.8.0",
   "numpy==1.26.4",

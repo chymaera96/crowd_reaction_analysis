@@ -367,26 +367,26 @@ def test_synthetic_one_step_training_smoke() -> None:
     assert float(loss.detach().item()) > 0.0
 
 
-def test_wav2vec2_style_feature_extractor_supports_one_hz_bins() -> None:
+def test_wav2vec2_style_feature_extractor_supports_half_second_bins() -> None:
     extractor = DummyWav2Vec2StyleFeatureExtractor(output_dim=8)
-    instances = torch.randn(2, 20, 16000)
+    instances = torch.randn(2, 40, 8000)
     embeddings = extractor(instances)
 
-    assert embeddings.shape == (2, 20, 8)
+    assert embeddings.shape == (2, 40, 8)
 
 
-def test_model_with_wav2vec2_style_features_outputs_one_hz_logits() -> None:
+def test_model_with_wav2vec2_style_features_outputs_half_second_logits() -> None:
     model = CrowdReactionModel(
         feature_extractor=DummyWav2Vec2StyleFeatureExtractor(output_dim=8),
         chunk_sec=20.0,
-        instance_sec=1.0,
+        instance_sec=0.5,
     )
 
-    outputs = model(instances=torch.randn(2, 20, 16000))
+    outputs = model(instances=torch.randn(2, 40, 8000))
 
-    assert outputs.instance_logits["event"].shape == (2, 20, 1)
-    assert outputs.instance_logits["approval"].shape == (2, 20, 1)
-    assert outputs.instance_logits["disapproval"].shape == (2, 20, 1)
+    assert outputs.instance_logits["event"].shape == (2, 40, 1)
+    assert outputs.instance_logits["approval"].shape == (2, 40, 1)
+    assert outputs.instance_logits["disapproval"].shape == (2, 40, 1)
 
 
 def test_encoder_configs_keep_expected_training_recipes() -> None:
@@ -398,10 +398,12 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     assert default_config["data"]["instance_sec"] == 1.0
     assert default_config["loss"]["unclear_label_weight"] == 0.75
     assert default_config["loss"]["conditional_attribute_loss"] is True
+    assert default_config["augmentation"]["enabled"] is True
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
-    assert wav2vec2_config["data"]["instance_sec"] == 1.0
+    assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
     assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True
+    assert wav2vec2_config["augmentation"]["enabled"] is True
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:

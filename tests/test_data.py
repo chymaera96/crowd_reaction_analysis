@@ -3,11 +3,15 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 import torch
 import torchaudio
 
 from crowd_reaction.data import (
     WeakChunkDataset,
+    WeakChunkRecord,
+    apply_audio_augmentation,
+    build_audio_augmentation,
     build_split_records,
     build_strong_validation_split,
     collate_batch,
@@ -219,6 +223,90 @@ def test_split_into_instances_exact_second_bins() -> None:
     assert instances.shape == (6, 2)
     assert torch.equal(instances[0], torch.tensor([0.0, 1.0]))
     assert torch.equal(instances[-1], torch.tensor([10.0, 11.0]))
+
+
+def test_build_audio_augmentation_disabled_returns_none() -> None:
+    assert build_audio_augmentation(None) is None
+    assert build_audio_augmentation({"enabled": False}) is None
+    assert build_audio_augmentation({"enabled": True}) is None
+
+
+def test_audiomentations_chain_preserves_shape_dtype_and_finite_values() -> None:
+    pytest.importorskip("audiomentations")
+    augmentation = build_audio_augmentation(
+        {
+            "enabled": True,
+            "lowpass": {"p": 1.0, "cutoff_min_hz": 3500, "cutoff_max_hz": 3500},
+            "pink_noise": {"p": 1.0, "snr_min_db": 20.0, "snr_max_db": 20.0},
+            "clipping": {"p": 1.0, "min_percentile_threshold": 10, "max_percentile_threshold": 10},
+        }
+    )
+    waveform = torch.linspace(-0.5, 0.5, 16000, dtype=torch.float32)
+
+    augmented = apply_audio_augmentation(waveform, augmentation, sample_rate=16000)
+
+    assert augmented.shape == waveform.shape
+    assert augmented.dtype == waveform.dtype
+    assert torch.isfinite(augmented).all()
+    assert not torch.allclose(augmented, waveform)
+
+
+def test_clipping_augmentation_changes_waveform_and_keeps_values_finite() -> None:
+    pytest.importorskip("audiomentations")
+    augmentation = build_audio_augmentation(
+        {
+            "enabled": True,
+            "clipping": {"p": 1.0, "min_percentile_threshold": 40, "max_percentile_threshold": 40},
+        }
+    )
+    waveform = torch.linspace(-1.0, 1.0, 16000, dtype=torch.float32)
+
+    augmented = apply_audio_augmentation(waveform, augmentation, sample_rate=16000)
+
+    assert augmented.shape == waveform.shape
+    assert torch.isfinite(augmented).all()
+    assert not torch.allclose(augmented, waveform)
+
+
+def test_training_dataset_can_apply_augmentation_while_validation_is_unchanged(tmp_path: Path) -> None:
+    pytest.importorskip("audiomentations")
+    audio_path = tmp_path / "sample.wav"
+    waveform = torch.linspace(-1.0, 1.0, 16000 * 20, dtype=torch.float32)
+    _write_audio(audio_path, waveform)
+    targets = weak_row_to_targets(
+        pd.Series(
+            {
+                "clear_disapproval": 0,
+                "unclear_disapproval": 0,
+                "unclear_approval": 0,
+                "clear_approval": 1,
+                "no_crowd": 0,
+                "crowd_chorus": 0,
+            }
+        )
+    )
+    record = WeakChunkRecord(
+        audio_path=str(audio_path),
+        speech_id="sample",
+        chunk_start_sec=0.0,
+        chunk_end_sec=20.0,
+        targets=targets,
+        split="train",
+    )
+    augmentation_config = {
+        "enabled": True,
+        "clipping": {"p": 1.0, "min_percentile_threshold": 40, "max_percentile_threshold": 40},
+    }
+
+    train_dataset = WeakChunkDataset([record], sample_rate=16000, chunk_sec=20.0, instance_sec=1.0, augmentation_config=augmentation_config)
+    val_dataset = WeakChunkDataset([record], sample_rate=16000, chunk_sec=20.0, instance_sec=1.0)
+
+    train_item = train_dataset[0]
+    val_item = val_dataset[0]
+
+    assert train_item["waveform"].shape == val_item["waveform"].shape
+    assert not torch.allclose(train_item["waveform"], val_item["waveform"])
+    assert torch.allclose(val_item["waveform"], waveform)
 
 
 def test_build_split_records_uses_audio_info_for_train_val_partition(tmp_path: Path) -> None:
