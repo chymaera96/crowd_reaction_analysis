@@ -40,7 +40,7 @@ python scripts/api.py \
 
 This writes:
 - `scores.json`: a dictionary with `relevant_event`, `approval`, and `disapproval` score lists
-- `predicted_segments.csv`: `start_sec,end_sec,label`, where `end_sec` is an ending timestamp
+- `predicted_segments.csv`: `start_sec,duration,label` rows, matching the no-header Sonic Visualiser CSV from `scripts/infer.py`
 - `plot.png`: the same spectrogram and score plot style used by `scripts/infer.py`
 
 Python usage:

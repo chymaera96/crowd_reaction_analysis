@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import sys
 from dataclasses import dataclass
@@ -202,13 +201,7 @@ def write_scores_json(result: InferenceResult, output_path: str | Path) -> None:
 
 
 def write_predicted_segments_csv(result: InferenceResult, output_path: str | Path) -> None:
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle)
-        writer.writerow(["start_sec", "end_sec", "label"])
-        for start_sec, end_sec, label in result.predicted_regions:
-            writer.writerow([f"{float(start_sec):.6f}", f"{float(end_sec):.6f}", label])
+    infer_utils.write_sonic_visualiser_regions(Path(output_path), result.predicted_regions)
 
 
 def plot_inference_result(

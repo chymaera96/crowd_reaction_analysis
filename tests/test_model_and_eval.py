@@ -544,7 +544,7 @@ def test_api_scores_json_uses_class_keyed_lists(tmp_path: Path) -> None:
     assert payload["disapproval"] == [0.30000001192092896, 0.6000000238418579]
 
 
-def test_api_predicted_segments_csv_uses_end_timestamp(tmp_path: Path) -> None:
+def test_api_predicted_segments_csv_uses_duration(tmp_path: Path) -> None:
     result = api_module.InferenceResult(
         audio_path="example.wav",
         instance_sec=1.0,
@@ -560,9 +560,8 @@ def test_api_predicted_segments_csv_uses_end_timestamp(tmp_path: Path) -> None:
     api_module.write_predicted_segments_csv(result, output_path)
 
     assert output_path.read_text(encoding="utf-8") == (
-        "start_sec,end_sec,label\n"
-        "2.000000,5.000000,approval\n"
-        "10.000000,11.500000,disapproval\n"
+        "2.000000,3.000000,approval\n"
+        "10.000000,1.500000,disapproval\n"
     )
 
 
@@ -598,6 +597,41 @@ def test_api_region_thresholding_matches_infer_event_gating() -> None:
         (1.0, 2.0, "approval"),
         (2.0, 3.0, "disapproval"),
     ]
+
+
+def test_api_predicted_segments_csv_merges_consecutive_bins_like_infer(tmp_path: Path) -> None:
+    scores = np.array(
+        [
+            [0.9, 0.7, 0.1],
+            [0.9, 0.7, 0.1],
+            [0.9, 0.7, 0.1],
+            [0.1, 0.7, 0.1],
+        ],
+        dtype=np.float32,
+    )
+    regions = infer_module.predicted_regions_from_probs(
+        scores,
+        label_names=["relevant_event", "approval", "disapproval"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=1.0,
+    )
+    result = api_module.InferenceResult(
+        audio_path="example.wav",
+        instance_sec=1.0,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        label_names=("relevant_event", "approval", "disapproval"),
+        times_sec=np.array([0.5, 1.5, 2.5, 3.5], dtype=np.float32),
+        scores=scores,
+        predicted_regions=regions,
+    )
+
+    output_path = tmp_path / "predicted_segments.csv"
+    api_module.write_predicted_segments_csv(result, output_path)
+
+    assert regions == [(0.0, 3.0, "approval")]
+    assert output_path.read_text(encoding="utf-8") == "0.000000,3.000000,approval\n"
 
 
 def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
