@@ -34,6 +34,7 @@ class InferenceResult:
     times_sec: np.ndarray
     scores: np.ndarray
     predicted_regions: list[tuple[float, float, str]]
+    median_filter_sec: float | None = 3.0
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,16 +146,16 @@ def _median_filter_binary(values: np.ndarray, *, kernel_bins: int) -> np.ndarray
     return filtered
 
 
-def predicted_regions_with_median_filter(
+def _thresholded_prediction_masks(
     predicted_probs: np.ndarray,
     *,
     label_names: list[str],
     event_threshold: float,
     attribute_threshold: float,
     instance_sec: float,
-    median_filter_sec: float | None = 3.0,
-    export_labels: tuple[str, ...] = ("approval", "disapproval"),
-) -> list[tuple[float, float, str]]:
+    median_filter_sec: float | None,
+    filtered_labels: tuple[str, ...] = ("approval", "disapproval"),
+) -> np.ndarray:
     if predicted_probs.shape[1] != len(label_names):
         raise ValueError("predicted_probs second dimension must match label_names")
     predicted_binary = np.zeros_like(predicted_probs, dtype=np.int64)
@@ -174,13 +175,35 @@ def predicted_regions_with_median_filter(
 
     if median_filter_sec is not None and float(median_filter_sec) > 0.0:
         kernel_bins = int(np.ceil(float(median_filter_sec) / float(instance_sec)))
-        for label in export_labels:
+        for label in filtered_labels:
             if label in label_names:
                 label_index = label_names.index(label)
                 predicted_binary[:, label_index] = _median_filter_binary(
                     predicted_binary[:, label_index],
                     kernel_bins=kernel_bins,
                 )
+    return predicted_binary
+
+
+def predicted_regions_with_median_filter(
+    predicted_probs: np.ndarray,
+    *,
+    label_names: list[str],
+    event_threshold: float,
+    attribute_threshold: float,
+    instance_sec: float,
+    median_filter_sec: float | None = 3.0,
+    export_labels: tuple[str, ...] = ("approval", "disapproval"),
+) -> list[tuple[float, float, str]]:
+    predicted_binary = _thresholded_prediction_masks(
+        predicted_probs,
+        label_names=label_names,
+        event_threshold=event_threshold,
+        attribute_threshold=attribute_threshold,
+        instance_sec=instance_sec,
+        median_filter_sec=median_filter_sec,
+        filtered_labels=export_labels,
+    )
 
     regions: list[tuple[float, float, str]] = []
     export_label_set = set(export_labels)
@@ -190,6 +213,24 @@ def predicted_regions_with_median_filter(
         for onset_sec, offset_sec in infer_utils.contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
             regions.append((float(onset_sec), float(offset_sec), label))
     return sorted(regions, key=lambda item: (item[0], item[1], item[2]))
+
+
+def scores_for_plot(result: InferenceResult) -> np.ndarray:
+    plot_scores = np.asarray(result.scores, dtype=np.float32).copy()
+    predicted_binary = _thresholded_prediction_masks(
+        plot_scores,
+        label_names=list(result.label_names),
+        event_threshold=float(result.event_threshold),
+        attribute_threshold=float(result.attribute_threshold),
+        instance_sec=float(result.instance_sec),
+        median_filter_sec=result.median_filter_sec,
+        filtered_labels=("approval", "disapproval"),
+    )
+    for label in ("approval", "disapproval"):
+        if label in result.label_names:
+            label_index = result.label_names.index(label)
+            plot_scores[:, label_index] = predicted_binary[:, label_index].astype(np.float32)
+    return plot_scores
 
 
 def run_audio_inference(
@@ -252,6 +293,7 @@ def run_audio_inference(
         times_sec=times_sec,
         scores=scores,
         predicted_regions=predicted_regions,
+        median_filter_sec=median_filter_sec,
     )
 
 
@@ -284,7 +326,7 @@ def plot_inference_result(
     infer_utils.plot_speech(
         audio_path=result.audio_path,
         speech_id=Path(result.audio_path).stem,
-        predicted_probs=result.scores,
+        predicted_probs=scores_for_plot(result),
         predicted_regions=result.predicted_regions,
         label_names=list(result.label_names),
         ground_truth_annotations=annotations or {},
@@ -310,7 +352,7 @@ def _plot_inference_result_with_config(
     infer_utils.plot_speech(
         audio_path=result.audio_path,
         speech_id=Path(result.audio_path).stem,
-        predicted_probs=result.scores,
+        predicted_probs=scores_for_plot(result),
         predicted_regions=result.predicted_regions,
         label_names=list(result.label_names),
         ground_truth_annotations=annotations or {},

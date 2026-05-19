@@ -645,6 +645,47 @@ def test_api_median_filter_removes_short_predicted_regions() -> None:
     assert filtered_regions == [(4.5, 7.0, "approval")]
 
 
+def test_api_plot_scores_use_median_filtered_attribute_masks() -> None:
+    scores = np.array(
+        [
+            [0.9, 0.0, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+    result = api_module.InferenceResult(
+        audio_path="example.wav",
+        instance_sec=0.5,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        label_names=("relevant_event", "approval", "disapproval"),
+        times_sec=np.arange(scores.shape[0], dtype=np.float32),
+        scores=scores,
+        predicted_regions=[],
+        median_filter_sec=3.0,
+    )
+
+    plot_scores = api_module.scores_for_plot(result)
+
+    assert np.allclose(plot_scores[:, 0], scores[:, 0])
+    assert np.allclose(plot_scores[:, 1], np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0], dtype=np.float32))
+    assert np.allclose(plot_scores[:, 2], np.zeros(scores.shape[0], dtype=np.float32))
+
+
 def test_api_predicted_segments_csv_merges_consecutive_bins_like_infer(tmp_path: Path) -> None:
     scores = np.array(
         [

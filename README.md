@@ -69,6 +69,7 @@ The returned `result` can be edited before plotting if you want to alter the sco
 The API defaults to CPU for portability. Use `--batch-size 1` or `--batch-size 2` on a laptop, and pass `--device cuda`, `--device cuda:0`, or `--device mps` only when that accelerator is available and working in your environment.
 Pass `--no-score-functions` to hide the probability curves and threshold lines in `plot.png`, leaving only the spectrogram and prediction/annotation spans.
 By default, API prediction spans use a 3 s median filter after event-gated thresholding to suppress very short approval/disapproval detections. Pass `--median-filter-sec 0` to disable it, or set a different window length.
+The plot uses the same median-filtered approval/disapproval functions as the exported spans; `scores.json` still stores the continuous unfiltered score functions.
 
 Dataset inputs:
 - `data/audios_info.csv` decides which source files are strong-labeled and therefore validation-only
