@@ -601,6 +601,50 @@ def test_api_region_thresholding_matches_infer_event_gating() -> None:
     ]
 
 
+def test_api_median_filter_removes_short_predicted_regions() -> None:
+    scores = np.array(
+        [
+            [0.9, 0.0, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.8, 0.0],
+            [0.9, 0.0, 0.0],
+            [0.9, 0.0, 0.0],
+        ],
+        dtype=np.float32,
+    )
+
+    unfiltered_regions = api_module.predicted_regions_with_median_filter(
+        scores,
+        label_names=["relevant_event", "approval", "disapproval"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=0.5,
+        median_filter_sec=0.0,
+    )
+    filtered_regions = api_module.predicted_regions_with_median_filter(
+        scores,
+        label_names=["relevant_event", "approval", "disapproval"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=0.5,
+        median_filter_sec=3.0,
+    )
+
+    assert unfiltered_regions == [(0.5, 2.0, "approval"), (4.5, 7.0, "approval")]
+    assert filtered_regions == [(4.5, 7.0, "approval")]
+
+
 def test_api_predicted_segments_csv_merges_consecutive_bins_like_infer(tmp_path: Path) -> None:
     scores = np.array(
         [
@@ -659,4 +703,5 @@ def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.checkpoint == "outputs/run/best_segment_f1.pt"
     assert args.audio == "input.wav"
     assert args.output_dir == "api_outputs/example"
+    assert args.median_filter_sec == 3.0
     assert args.no_score_functions is True

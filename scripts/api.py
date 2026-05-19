@@ -48,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=None, help="Torch device string, e.g. cuda, cuda:0, or cpu")
     parser.add_argument("--annotations", default=None, help="Optional strong-label TXT annotations to overlay on the plot")
     parser.add_argument(
+        "--median-filter-sec",
+        type=float,
+        default=3.0,
+        help="Median-filter window for predicted approval/disapproval regions; set 0 to disable",
+    )
+    parser.add_argument(
         "--no-score-functions",
         action="store_true",
         help="Hide probability score functions and threshold lines from plot.png",
@@ -125,12 +131,74 @@ def _scores_with_fixed_label_order(
     return fixed_scores
 
 
+def _median_filter_binary(values: np.ndarray, *, kernel_bins: int) -> np.ndarray:
+    binary = np.asarray(values, dtype=np.int64).reshape(-1)
+    if kernel_bins <= 1 or binary.size == 0:
+        return binary.copy()
+    if kernel_bins % 2 == 0:
+        kernel_bins += 1
+    pad_bins = kernel_bins // 2
+    padded = np.pad(binary, (pad_bins, pad_bins), mode="constant", constant_values=0)
+    filtered = np.zeros_like(binary)
+    for index in range(binary.size):
+        filtered[index] = int(np.median(padded[index : index + kernel_bins]) >= 0.5)
+    return filtered
+
+
+def predicted_regions_with_median_filter(
+    predicted_probs: np.ndarray,
+    *,
+    label_names: list[str],
+    event_threshold: float,
+    attribute_threshold: float,
+    instance_sec: float,
+    median_filter_sec: float | None = 3.0,
+    export_labels: tuple[str, ...] = ("approval", "disapproval"),
+) -> list[tuple[float, float, str]]:
+    if predicted_probs.shape[1] != len(label_names):
+        raise ValueError("predicted_probs second dimension must match label_names")
+    predicted_binary = np.zeros_like(predicted_probs, dtype=np.int64)
+    for class_index, label in enumerate(label_names):
+        threshold = event_threshold if label == "relevant_event" else attribute_threshold
+        predicted_binary[:, class_index] = (predicted_probs[:, class_index] >= threshold).astype(np.int64)
+    if "relevant_event" in label_names:
+        event_index = label_names.index("relevant_event")
+        event_active = predicted_binary[:, event_index].astype(bool)
+        for gated_label in ("approval", "disapproval"):
+            if gated_label in label_names:
+                gated_index = label_names.index(gated_label)
+                predicted_binary[:, gated_index] = np.logical_and(
+                    event_active,
+                    predicted_binary[:, gated_index].astype(bool),
+                ).astype(np.int64)
+
+    if median_filter_sec is not None and float(median_filter_sec) > 0.0:
+        kernel_bins = int(np.ceil(float(median_filter_sec) / float(instance_sec)))
+        for label in export_labels:
+            if label in label_names:
+                label_index = label_names.index(label)
+                predicted_binary[:, label_index] = _median_filter_binary(
+                    predicted_binary[:, label_index],
+                    kernel_bins=kernel_bins,
+                )
+
+    regions: list[tuple[float, float, str]] = []
+    export_label_set = set(export_labels)
+    for class_index, label in enumerate(label_names):
+        if label not in export_label_set:
+            continue
+        for onset_sec, offset_sec in infer_utils.contiguous_regions(predicted_binary[:, class_index], instance_sec=instance_sec):
+            regions.append((float(onset_sec), float(offset_sec), label))
+    return sorted(regions, key=lambda item: (item[0], item[1], item[2]))
+
+
 def run_audio_inference(
     audio_path: str | Path,
     config_path: str | Path,
     checkpoint_path: str | Path,
     event_threshold: float | None = None,
     attribute_threshold: float | None = None,
+    median_filter_sec: float | None = 3.0,
     batch_size: int | None = None,
     device: str | torch.device | None = None,
 ) -> InferenceResult:
@@ -166,12 +234,13 @@ def run_audio_inference(
         num_bins=num_bins,
     )
     label_names = tuple(infer_utils.PLOTTED_LABEL_ORDER)
-    predicted_regions = infer_utils.predicted_regions_from_probs(
+    predicted_regions = predicted_regions_with_median_filter(
         scores,
         label_names=list(label_names),
         event_threshold=resolved_event_threshold,
         attribute_threshold=resolved_attribute_threshold,
         instance_sec=instance_sec,
+        median_filter_sec=median_filter_sec,
     )
     times_sec = (np.arange(num_bins, dtype=np.float32) + 0.5) * instance_sec
     return InferenceResult(
@@ -268,6 +337,7 @@ def main() -> None:
         checkpoint_path=args.checkpoint,
         event_threshold=event_threshold,
         attribute_threshold=attribute_threshold,
+        median_filter_sec=args.median_filter_sec,
         batch_size=args.batch_size,
         device=args.device,
     )
