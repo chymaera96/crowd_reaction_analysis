@@ -144,18 +144,28 @@ def weak_row_to_targets(row: pd.Series, *, unclear_label_weight: float = 0.5) ->
     approval = approval_confidence > 0.0
     disapproval = disapproval_confidence > 0.0
     crowd_chorus = _row_flag(row, "crowd_chorus") > 0
+    if crowd_chorus:
+        approval_confidence = max(approval_confidence, 1.0)
+        approval = True
     no_crowd = _row_flag(row, NEGATIVE_CROWD_LABEL) > 0
 
-    event_positive = approval or disapproval or crowd_chorus
+    event_positive = approval or disapproval
     contradictory_event = event_positive and no_crowd
     event_mask = 0.0 if contradictory_event or (not event_positive and not no_crowd) else 1.0
     event_target = (1.0,) if event_positive and not contradictory_event else (0.0,)
 
     approval_target = (1.0 if approval else 0.0,)
     disapproval_target = (1.0 if disapproval else 0.0,)
-    attribute_mask = 0.0 if no_crowd or crowd_chorus or contradictory_event or not event_positive else max(approval_confidence, disapproval_confidence)
-    approval_mask = approval_confidence if approval and attribute_mask > 0.0 else attribute_mask
-    disapproval_mask = disapproval_confidence if disapproval and attribute_mask > 0.0 else attribute_mask
+    row_confidence = max(approval_confidence, disapproval_confidence)
+    if contradictory_event or (not event_positive and not no_crowd):
+        approval_mask = 0.0
+        disapproval_mask = 0.0
+    elif no_crowd:
+        approval_mask = 1.0
+        disapproval_mask = 1.0
+    else:
+        approval_mask = approval_confidence if approval else row_confidence
+        disapproval_mask = disapproval_confidence if disapproval else row_confidence
 
     return WeakBagTargets(
         event_target=event_target,
@@ -180,7 +190,7 @@ def strong_label_to_class(label: str) -> int | None:
 
 def strong_label_to_task(label: str) -> str | None:
     label = str(label).strip()
-    if label in APPROVAL_LABELS:
+    if label in APPROVAL_LABELS or label == "crowd_chorus":
         return "approval"
     if label in DISAPPROVAL_LABELS:
         return "disapproval"

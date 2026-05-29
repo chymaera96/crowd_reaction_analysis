@@ -81,7 +81,7 @@ def test_mmm_loss_from_probs_matches_logit_wrapper() -> None:
     )
 
 
-def test_conditional_attribute_loss_uses_detached_event_gate() -> None:
+def test_attribute_loss_is_not_conditioned_on_event_head() -> None:
     event_logits = torch.tensor([[[2.0], [-2.0]]], dtype=torch.float32, requires_grad=True)
     approval_logits = torch.tensor([[[1.0], [0.0]]], dtype=torch.float32, requires_grad=True)
     outputs = SimpleNamespace(
@@ -100,13 +100,13 @@ def test_conditional_attribute_loss_uses_detached_event_gate() -> None:
     loss, _ = train_module.compute_multitask_loss(
         outputs,
         targets,
-        loss_config={"conditional_attribute_loss": True, "lambda_approval": 1.0},
+        loss_config={"conditional_attribute_loss": False, "lambda_approval": 1.0},
         task_class_weights={},
     )
     loss.backward()
 
-    expected = mmm_bag_loss_from_probs(
-        torch.sigmoid(event_logits.detach()) * torch.sigmoid(approval_logits.detach()),
+    expected = mmm_bag_loss(
+        approval_logits.detach(),
         targets["approval_target"],
         bag_mask=targets["approval_mask"],
     )
@@ -114,6 +114,33 @@ def test_conditional_attribute_loss_uses_detached_event_gate() -> None:
     assert event_logits.grad is None or torch.allclose(event_logits.grad, torch.zeros_like(event_logits))
     assert approval_logits.grad is not None
     assert float(approval_logits.grad.abs().sum().item()) > 0.0
+
+
+def test_attribute_only_loss_does_not_require_event_targets() -> None:
+    approval_logits = torch.tensor([[[1.0], [0.0]]], dtype=torch.float32, requires_grad=True)
+    disapproval_logits = torch.tensor([[[0.0], [1.0]]], dtype=torch.float32, requires_grad=True)
+    outputs = SimpleNamespace(
+        instance_logits={
+            "approval": approval_logits,
+            "disapproval": disapproval_logits,
+        }
+    )
+    targets = {
+        "approval_target": torch.tensor([[1.0]], dtype=torch.float32),
+        "approval_mask": torch.tensor([1.0], dtype=torch.float32),
+        "disapproval_target": torch.tensor([[0.0]], dtype=torch.float32),
+        "disapproval_mask": torch.tensor([1.0], dtype=torch.float32),
+    }
+
+    loss, loss_values = train_module.compute_multitask_loss(
+        outputs,
+        targets,
+        loss_config={"lambda_approval": 1.0, "lambda_disapproval": 1.0},
+        task_class_weights={},
+    )
+
+    assert float(loss.detach().item()) > 0.0
+    assert set(loss_values) == {"approval_loss", "disapproval_loss", "total_loss"}
 
 
 def test_weak_eval_respects_masks() -> None:
@@ -208,7 +235,21 @@ def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> N
     assert train_module.validation_score(metrics, "event_f1") == 0.6
 
 
+def test_train_validation_scores_average_enabled_attribute_f1s() -> None:
+    metrics = {
+        "weak": {"approval": {"macro_f1": 0.1}, "disapproval": {"macro_f1": 0.2}},
+        "strong": {
+            "approval": {"segment_macro_f1": 0.4, "event_f1": 0.2},
+            "disapproval": {"segment_macro_f1": 0.6, "event_f1": 0.8},
+        },
+    }
+
+    assert train_module.validation_score(metrics, "segment_macro_f1") == 0.5
+    assert train_module.validation_score(metrics, "event_f1") == 0.5
+
+
 def test_results_thresholds_use_inference_threshold_policy() -> None:
+    task_labels = {"approval": "approval", "disapproval": "disapproval"}
     thresholds = results_module.thresholds_from_config(
         {
             "val": {
@@ -216,14 +257,26 @@ def test_results_thresholds_use_inference_threshold_policy() -> None:
                 "event_threshold": 0.2,
                 "attribute_threshold": 0.3,
             }
-        }
+        },
+        task_labels,
     )
 
     assert thresholds == {
-        "relevant_event": 0.2,
         "approval": 0.3,
         "disapproval": 0.3,
     }
+
+
+def test_results_enabled_task_labels_follow_config() -> None:
+    assert results_module.enabled_task_labels(
+        {
+            "tasks": {
+                "event": {"enabled": False},
+                "approval": {"enabled": True},
+                "disapproval": {"enabled": True},
+            }
+        }
+    ) == {"approval": "approval", "disapproval": "disapproval"}
 
 
 def test_results_payload_shape() -> None:
@@ -295,7 +348,7 @@ def test_parse_strong_label_file_by_task_splits_event_and_attributes(tmp_path: P
     events_by_task = parse_strong_label_file_by_task(str(txt_path), speech_id="speech-1")
 
     assert len(events_by_task["event"]) == 3
-    assert [(event.onset_sec, event.offset_sec) for event in events_by_task["approval"]] == [(2.0, 3.0)]
+    assert [(event.onset_sec, event.offset_sec) for event in events_by_task["approval"]] == [(1.0, 2.0), (2.0, 3.0)]
     assert [(event.onset_sec, event.offset_sec) for event in events_by_task["disapproval"]] == [(0.0, 1.0)]
 
 
@@ -389,6 +442,41 @@ def test_model_with_wav2vec2_style_features_outputs_half_second_logits() -> None
     assert outputs.instance_logits["disapproval"].shape == (2, 40, 1)
 
 
+def test_event_only_model_outputs_only_event_head() -> None:
+    model = CrowdReactionModel(
+        feature_extractor=DummyFeatureExtractor(output_dim=8),
+        chunk_sec=20.0,
+        tasks_config={
+            "event": {"enabled": True},
+            "approval": {"enabled": False},
+            "disapproval": {"enabled": False},
+        },
+    )
+
+    outputs = model(instances=torch.randn(2, 20, 32))
+
+    assert set(outputs.instance_logits) == {"event"}
+    assert outputs.instance_logits["event"].shape == (2, 20, 1)
+
+
+def test_attribute_only_model_outputs_only_attribute_heads() -> None:
+    model = CrowdReactionModel(
+        feature_extractor=DummyFeatureExtractor(output_dim=8),
+        chunk_sec=20.0,
+        tasks_config={
+            "event": {"enabled": False},
+            "approval": {"enabled": True},
+            "disapproval": {"enabled": True},
+        },
+    )
+
+    outputs = model(instances=torch.randn(2, 20, 32))
+
+    assert set(outputs.instance_logits) == {"approval", "disapproval"}
+    assert outputs.instance_logits["approval"].shape == (2, 20, 1)
+    assert outputs.instance_logits["disapproval"].shape == (2, 20, 1)
+
+
 def test_encoder_configs_keep_expected_training_recipes() -> None:
     root = Path(__file__).resolve().parents[1]
     default_config = yaml.safe_load((root / "configs" / "default.yaml").read_text(encoding="utf-8"))
@@ -397,13 +485,32 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     assert default_config["model"]["encoder_type"] == "beats"
     assert default_config["data"]["instance_sec"] == 1.0
     assert default_config["loss"]["unclear_label_weight"] == 0.75
-    assert default_config["loss"]["conditional_attribute_loss"] is True
+    assert default_config["loss"]["conditional_attribute_loss"] is False
     assert default_config["augmentation"]["enabled"] is True
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
     assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
-    assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True
+    assert wav2vec2_config["loss"]["conditional_attribute_loss"] is False
     assert wav2vec2_config["augmentation"]["enabled"] is True
+
+
+def test_ablation_configs_select_expected_enabled_tasks() -> None:
+    root = Path(__file__).resolve().parents[1]
+    expected = {
+        "beats_event_only.yaml": ("event",),
+        "beats_attributes_only.yaml": ("approval", "disapproval"),
+        "wav2vec2_event_only.yaml": ("event",),
+        "wav2vec2_attributes_only.yaml": ("approval", "disapproval"),
+    }
+
+    for config_name, enabled_tasks in expected.items():
+        config = yaml.safe_load((root / "configs" / "ablations" / config_name).read_text(encoding="utf-8"))
+        assert tuple(
+            task_name
+            for task_name in ("event", "approval", "disapproval")
+            if config["tasks"][task_name]["enabled"]
+        ) == enabled_tasks
+        assert config["loss"]["conditional_attribute_loss"] is False
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
@@ -426,33 +533,50 @@ def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:
     )
 
     assert regions == [
+        (0.0, 1.0, "disapproval"),
         (1.0, 3.0, "approval"),
-        (2.0, 3.0, "disapproval"),
-        (4.0, 5.0, "disapproval"),
+        (1.0, 3.0, "relevant_event"),
+        (2.0, 5.0, "disapproval"),
+        (4.0, 5.0, "relevant_event"),
     ]
 
     output_path = tmp_path / "predicted.csv"
     infer_module.write_sonic_visualiser_regions(output_path, regions)
     assert output_path.read_text(encoding="utf-8") == (
+        "0.000000,1.000000,disapproval\n"
         "1.000000,2.000000,approval\n"
-        "2.000000,1.000000,disapproval\n"
-        "4.000000,1.000000,disapproval\n"
+        "1.000000,2.000000,relevant_event\n"
+        "2.000000,3.000000,disapproval\n"
+        "4.000000,1.000000,relevant_event\n"
     )
 
 
-def test_infer_conditions_attribute_scores_by_event_probability() -> None:
-    probs_by_task = {
-        "event": np.array([[[0.2], [0.8]]], dtype=np.float32),
-        "approval": np.array([[[0.5], [0.5]]], dtype=np.float32),
-        "disapproval": np.array([[[0.25], [0.75]]], dtype=np.float32),
-    }
+def test_infer_event_only_exports_relevant_event_regions() -> None:
+    probs = np.array([[0.1], [0.8], [0.9], [0.2]], dtype=np.float32)
 
-    conditioned = infer_module.condition_attribute_probs_by_event(probs_by_task)
+    regions = infer_module.predicted_regions_from_probs(
+        probs,
+        label_names=["relevant_event"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=1.0,
+    )
 
-    assert np.allclose(conditioned["event"], np.array([[[0.2], [0.8]]], dtype=np.float32))
-    assert np.allclose(conditioned["approval"], np.array([[[0.1], [0.4]]], dtype=np.float32))
-    assert np.allclose(conditioned["disapproval"], np.array([[[0.05], [0.6]]], dtype=np.float32))
-    assert np.allclose(probs_by_task["approval"], np.array([[[0.5], [0.5]]], dtype=np.float32))
+    assert regions == [(1.0, 3.0, "relevant_event")]
+
+
+def test_infer_attribute_only_exports_attributes_without_event_gating() -> None:
+    probs = np.array([[0.9, 0.1], [0.8, 0.7], [0.1, 0.8]], dtype=np.float32)
+
+    regions = infer_module.predicted_regions_from_probs(
+        probs,
+        label_names=["approval", "disapproval"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=1.0,
+    )
+
+    assert regions == [(0.0, 2.0, "approval"), (1.0, 3.0, "disapproval")]
 
 
 def test_infer_aggregate_multitask_probs_flattens_task_outputs() -> None:
@@ -500,7 +624,7 @@ def test_infer_aggregate_multitask_probs_flattens_task_outputs() -> None:
     )
 
 
-def test_infer_ground_truth_regions_export_only_approval_disapproval() -> None:
+def test_infer_ground_truth_regions_treat_crowd_chorus_as_approval() -> None:
     regions = infer_module.regions_from_annotations(
         {
             "clear_approval": [(0.0, 1.0)],
@@ -516,6 +640,7 @@ def test_infer_ground_truth_regions_export_only_approval_disapproval() -> None:
         (2.0, 3.0, "approval"),
         (4.0, 5.0, "disapproval"),
         (6.0, 7.0, "disapproval"),
+        (8.0, 9.0, "approval"),
     ]
 
 
@@ -546,6 +671,25 @@ def test_api_scores_json_uses_class_keyed_lists(tmp_path: Path) -> None:
     assert payload["disapproval"] == [0.30000001192092896, 0.6000000238418579]
 
 
+def test_api_scores_json_uses_only_active_labels(tmp_path: Path) -> None:
+    result = api_module.InferenceResult(
+        audio_path="example.wav",
+        instance_sec=1.0,
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        label_names=("approval", "disapproval"),
+        times_sec=np.array([0.5], dtype=np.float32),
+        scores=np.array([[0.2, 0.3]], dtype=np.float32),
+        predicted_regions=[],
+    )
+
+    output_path = tmp_path / "scores.json"
+    api_module.write_scores_json(result, output_path)
+    payload = json.loads(output_path.read_text(encoding="utf-8"))
+
+    assert list(payload) == ["approval", "disapproval"]
+
+
 def test_api_predicted_segments_csv_uses_duration(tmp_path: Path) -> None:
     result = api_module.InferenceResult(
         audio_path="example.wav",
@@ -567,7 +711,7 @@ def test_api_predicted_segments_csv_uses_duration(tmp_path: Path) -> None:
     )
 
 
-def test_api_region_thresholding_matches_infer_event_gating() -> None:
+def test_api_region_thresholding_matches_infer_without_event_gating() -> None:
     scores = np.array(
         [
             [0.2, 0.9, 0.9],
@@ -596,7 +740,9 @@ def test_api_region_thresholding_matches_infer_event_gating() -> None:
     )
 
     assert result.predicted_regions == [
-        (1.0, 2.0, "approval"),
+        (0.0, 1.0, "disapproval"),
+        (0.0, 2.0, "approval"),
+        (1.0, 3.0, "relevant_event"),
         (2.0, 3.0, "disapproval"),
     ]
 
@@ -641,8 +787,8 @@ def test_api_median_filter_removes_short_predicted_regions() -> None:
         median_filter_sec=3.0,
     )
 
-    assert unfiltered_regions == [(0.5, 2.0, "approval"), (4.5, 7.0, "approval")]
-    assert filtered_regions == [(4.5, 7.0, "approval")]
+    assert unfiltered_regions == [(0.0, 8.0, "relevant_event"), (0.5, 2.0, "approval"), (4.5, 7.0, "approval")]
+    assert filtered_regions == [(0.0, 8.0, "relevant_event"), (4.5, 7.0, "approval")]
 
 
 def test_api_plot_scores_use_median_filtered_attribute_masks() -> None:
@@ -681,7 +827,7 @@ def test_api_plot_scores_use_median_filtered_attribute_masks() -> None:
 
     plot_scores = api_module.scores_for_plot(result)
 
-    assert np.allclose(plot_scores[:, 0], scores[:, 0])
+    assert np.allclose(plot_scores[:, 0], np.ones(scores.shape[0], dtype=np.float32))
     assert np.allclose(plot_scores[:, 1], np.array([0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0], dtype=np.float32))
     assert np.allclose(plot_scores[:, 2], np.zeros(scores.shape[0], dtype=np.float32))
 
@@ -717,8 +863,11 @@ def test_api_predicted_segments_csv_merges_consecutive_bins_like_infer(tmp_path:
     output_path = tmp_path / "predicted_segments.csv"
     api_module.write_predicted_segments_csv(result, output_path)
 
-    assert regions == [(0.0, 3.0, "approval")]
-    assert output_path.read_text(encoding="utf-8") == "0.000000,3.000000,approval\n"
+    assert regions == [(0.0, 3.0, "relevant_event"), (0.0, 4.0, "approval")]
+    assert output_path.read_text(encoding="utf-8") == (
+        "0.000000,3.000000,relevant_event\n"
+        "0.000000,4.000000,approval\n"
+    )
 
 
 def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -372,11 +372,6 @@ def collect_strong_predictions(
             task_name: torch.sigmoid(task_logits).cpu().numpy()
             for task_name, task_logits in outputs.instance_logits.items()
         }
-        if "event" in instance_probs_by_task:
-            event_instance_probs = instance_probs_by_task["event"]
-            for task_name in ("approval", "disapproval"):
-                if task_name in instance_probs_by_task:
-                    instance_probs_by_task[task_name] = event_instance_probs * instance_probs_by_task[task_name]
 
         for batch_index in range(instances.shape[0]):
             for task_name, instance_probs in instance_probs_by_task.items():

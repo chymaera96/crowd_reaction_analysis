@@ -117,7 +117,7 @@ def test_weak_row_to_targets_maps_clear_disapproval() -> None:
     assert targets.disapproval_mask == 1.0
 
 
-def test_weak_row_to_targets_treats_crowd_chorus_as_event_only() -> None:
+def test_weak_row_to_targets_treats_crowd_chorus_as_approval() -> None:
     targets = weak_row_to_targets(
         pd.Series(
             {
@@ -133,8 +133,10 @@ def test_weak_row_to_targets_treats_crowd_chorus_as_event_only() -> None:
     )
     assert targets.event_target == (1.0,)
     assert targets.event_mask == 1.0
-    assert targets.approval_mask == 0.0
-    assert targets.disapproval_mask == 0.0
+    assert targets.approval_target == (1.0,)
+    assert targets.approval_mask == 1.0
+    assert targets.disapproval_target == (0.0,)
+    assert targets.disapproval_mask == 1.0
 
 
 def test_weak_row_to_targets_masks_contradictory_no_crowd_and_crowd_labels() -> None:
@@ -195,8 +197,10 @@ def test_weak_row_to_targets_maps_no_crowd_to_negative_event() -> None:
     )
     assert targets.event_target == (0.0,)
     assert targets.event_mask == 1.0
-    assert targets.approval_mask == 0.0
-    assert targets.disapproval_mask == 0.0
+    assert targets.approval_target == (0.0,)
+    assert targets.approval_mask == 1.0
+    assert targets.disapproval_target == (0.0,)
+    assert targets.disapproval_mask == 1.0
 
 
 def test_parse_strong_label_file_ignores_non_target_labels(tmp_path: Path) -> None:
@@ -510,8 +514,10 @@ def test_build_split_records_appends_segmented_negative_data_to_train(tmp_path: 
     assert all(record.chunk_start_sec == 0.0 and record.chunk_end_sec == 20.0 for record in negative_records)
     assert all(record.targets.event_target == (0.0,) for record in negative_records)
     assert all(record.targets.event_mask == 1.0 for record in negative_records)
-    assert all(record.targets.approval_mask == 0.0 for record in negative_records)
-    assert all(record.targets.disapproval_mask == 0.0 for record in negative_records)
+    assert all(record.targets.approval_target == (0.0,) for record in negative_records)
+    assert all(record.targets.approval_mask == 1.0 for record in negative_records)
+    assert all(record.targets.disapproval_target == (0.0,) for record in negative_records)
+    assert all(record.targets.disapproval_mask == 1.0 for record in negative_records)
 
     dataset = WeakChunkDataset(negative_records, sample_rate=16000, chunk_sec=20.0, instance_sec=1.0)
     item = dataset[0]

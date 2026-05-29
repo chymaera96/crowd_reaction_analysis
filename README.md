@@ -18,6 +18,10 @@ If you want Weights & Biases logging:
 Main entrypoints:
 - `scripts/train.py --config configs/default.yaml --output-dir /path/to/output --run-id exp001 --wandb-mode online`
 - `scripts/train.py --config configs/wav2vec2.yaml --output-dir outputs --run-id wav2vec2_2hz --wandb-mode disabled`
+- `scripts/train.py --config configs/ablations/beats_event_only.yaml --output-dir outputs --run-id beats_event_only`
+- `scripts/train.py --config configs/ablations/beats_attributes_only.yaml --output-dir outputs --run-id beats_attr_only`
+- `scripts/train.py --config configs/ablations/wav2vec2_event_only.yaml --output-dir outputs --run-id w2v_event_only`
+- `scripts/train.py --config configs/ablations/wav2vec2_attributes_only.yaml --output-dir outputs --run-id w2v_attr_only`
 - `scripts/results.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_2hz/best_segment_f1.pt`
 - `scripts/infer.py --config configs/default.yaml --checkpoint outputs/exp001/best_segment_f1.pt --output-dir outputs/exp001/inference_plots --run-id exp001_infer --wandb-mode online`
 - `scripts/api.py --config configs/wav2vec2.yaml --checkpoint outputs/wav2vec2_2hz/best_segment_f1.pt --audio /path/to/audio.wav --output-dir api_outputs/example`
@@ -39,7 +43,7 @@ python scripts/api.py \
 ```
 
 This writes:
-- `scores.json`: a dictionary with `relevant_event`, `approval`, and `disapproval` score lists
+- `scores.json`: a dictionary keyed by the checkpoint's active labels
 - `predicted_segments.csv`: `start_sec,duration,label` rows, matching the no-header Sonic Visualiser CSV from `scripts/infer.py`
 - `plot.png`: the same spectrogram and score plot style used by `scripts/infer.py`
 
@@ -64,12 +68,12 @@ write_predicted_segments_csv(result, "api_outputs/example/predicted_segments.csv
 plot_inference_result(result, "api_outputs/example/plot.png")
 ```
 
-The approval and disapproval score functions are already event-conditioned, matching the plotted functions from `scripts/infer.py`.
+The score functions are independent per active label; approval/disapproval are not conditioned on `relevant_event` in the ablation setup.
 The returned `result` can be edited before plotting if you want to alter the score functions or predicted regions.
 The API defaults to CPU for portability. Use `--batch-size 1` or `--batch-size 2` on a laptop, and pass `--device cuda`, `--device cuda:0`, or `--device mps` only when that accelerator is available and working in your environment.
 Pass `--no-score-functions` to hide the probability curves and threshold lines in `plot.png`, leaving only the spectrogram and prediction/annotation spans.
-By default, API prediction spans use a 3 s median filter after event-gated thresholding to suppress very short approval/disapproval detections. Pass `--median-filter-sec 0` to disable it, or set a different window length.
-The plot uses the same median-filtered approval/disapproval functions as the exported spans; `scores.json` still stores the continuous unfiltered score functions.
+By default, API prediction spans use a 3 s median filter after thresholding to suppress very short detections. Pass `--median-filter-sec 0` to disable it, or set a different window length.
+The plot uses the same median-filtered functions as the exported spans; `scores.json` still stores the continuous unfiltered score functions.
 
 Dataset inputs:
 - `data/audios_info.csv` decides which source files are strong-labeled and therefore validation-only
@@ -94,16 +98,22 @@ Weak targets:
 - weak positives are any of `clear_disapproval`, `unclear_disapproval`, `unclear_approval`, `clear_approval`, or `crowd_chorus`
 - weak negatives are `no_crowd`
 - clear labels train approval/disapproval with full weight; unclear labels train them with `loss.unclear_label_weight`
-- configs may enable conditional attribute MIL so approval/disapproval losses are trained on event-gated attribute probabilities
-- `crowd_chorus` trains only `event`
-- approval/disapproval are masked for `no_crowd` because they are immaterial when no event is present
+- approval/disapproval train independently without event-gated probabilities
+- `crowd_chorus` trains `event=1` and `approval=1`
+- `no_crowd` trains `event=0`, `approval=0`, and `disapproval=0`
 - `hard_annotation` is ignored for target construction
 
 Encoder configs:
-- `configs/default.yaml` uses frozen BEATs with conditional attribute MIL and `data.instance_sec: 1.0`
-- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, conditional attribute MIL, and `data.instance_sec: 0.5`
+- `configs/default.yaml` uses frozen BEATs with flat independent heads and `data.instance_sec: 1.0`
+- `configs/wav2vec2.yaml` uses frozen `facebook/wav2vec2-base` with normalized input, flat independent heads, and `data.instance_sec: 0.5`
 - both configs use `loss.unclear_label_weight: 0.75`; BEATs produces 1 Hz logits and wav2vec2 produces 2 Hz logits
 - train-time waveform augmentation uses `audiomentations` for random lowpass filtering, pink noise, and clipping distortion; validation, results, inference, and API audio are not augmented
+
+Ablation configs:
+- `configs/ablations/beats_event_only.yaml`
+- `configs/ablations/beats_attributes_only.yaml`
+- `configs/ablations/wav2vec2_event_only.yaml`
+- `configs/ablations/wav2vec2_attributes_only.yaml`
 
 Strong validation uses `sed_eval`:
 - all strong crowd-like labels collapse to a single positive `crowd` event class
@@ -121,7 +131,7 @@ Checkpoint outputs:
 
 Inference plots:
 - `scripts/infer.py` runs the trained model over the strong-labeled validation files
-- it saves one PNG per file with a spectrogram background, raw ground-truth strong spans, and prediction score curves for `relevant_event`, `approval`, and `disapproval`
+- it saves one PNG per file with a spectrogram background, raw ground-truth strong spans, and prediction score curves for the checkpoint's active labels
 - the default event threshold is `sigmoid(-1.5)`, about `0.182`; approval/disapproval use `val.attribute_threshold`
-- exported approval/disapproval regions are hard-gated by the `relevant_event` threshold
+- exported regions are thresholded independently per active label
 - if W&B is enabled or `--wandb-mode` / `--run-id` are passed, the saved images are also logged to W&B

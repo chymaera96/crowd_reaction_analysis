@@ -121,15 +121,14 @@ def _scores_with_fixed_label_order(
     active_label_names: list[str],
     *,
     num_bins: int,
-) -> np.ndarray:
-    fixed_scores = np.zeros((num_bins, len(infer_utils.PLOTTED_LABEL_ORDER)), dtype=np.float32)
-    for output_index, label_name in enumerate(infer_utils.PLOTTED_LABEL_ORDER):
-        if label_name not in active_label_names:
-            continue
+) -> tuple[np.ndarray, tuple[str, ...]]:
+    label_names = tuple(label_name for label_name in infer_utils.PLOTTED_LABEL_ORDER if label_name in active_label_names)
+    fixed_scores = np.zeros((num_bins, len(label_names)), dtype=np.float32)
+    for output_index, label_name in enumerate(label_names):
         input_index = active_label_names.index(label_name)
         copy_bins = min(num_bins, aggregated_scores.shape[0])
         fixed_scores[:copy_bins, output_index] = aggregated_scores[:copy_bins, input_index]
-    return fixed_scores
+    return fixed_scores, label_names
 
 
 def _median_filter_binary(values: np.ndarray, *, kernel_bins: int) -> np.ndarray:
@@ -154,7 +153,7 @@ def _thresholded_prediction_masks(
     attribute_threshold: float,
     instance_sec: float,
     median_filter_sec: float | None,
-    filtered_labels: tuple[str, ...] = ("approval", "disapproval"),
+    filtered_labels: tuple[str, ...] | None = None,
 ) -> np.ndarray:
     if predicted_probs.shape[1] != len(label_names):
         raise ValueError("predicted_probs second dimension must match label_names")
@@ -162,20 +161,10 @@ def _thresholded_prediction_masks(
     for class_index, label in enumerate(label_names):
         threshold = event_threshold if label == "relevant_event" else attribute_threshold
         predicted_binary[:, class_index] = (predicted_probs[:, class_index] >= threshold).astype(np.int64)
-    if "relevant_event" in label_names:
-        event_index = label_names.index("relevant_event")
-        event_active = predicted_binary[:, event_index].astype(bool)
-        for gated_label in ("approval", "disapproval"):
-            if gated_label in label_names:
-                gated_index = label_names.index(gated_label)
-                predicted_binary[:, gated_index] = np.logical_and(
-                    event_active,
-                    predicted_binary[:, gated_index].astype(bool),
-                ).astype(np.int64)
-
     if median_filter_sec is not None and float(median_filter_sec) > 0.0:
         kernel_bins = int(np.ceil(float(median_filter_sec) / float(instance_sec)))
-        for label in filtered_labels:
+        labels_to_filter = label_names if filtered_labels is None else filtered_labels
+        for label in labels_to_filter:
             if label in label_names:
                 label_index = label_names.index(label)
                 predicted_binary[:, label_index] = _median_filter_binary(
@@ -193,7 +182,7 @@ def predicted_regions_with_median_filter(
     attribute_threshold: float,
     instance_sec: float,
     median_filter_sec: float | None = 3.0,
-    export_labels: tuple[str, ...] = ("approval", "disapproval"),
+    export_labels: tuple[str, ...] | None = None,
 ) -> list[tuple[float, float, str]]:
     predicted_binary = _thresholded_prediction_masks(
         predicted_probs,
@@ -206,7 +195,7 @@ def predicted_regions_with_median_filter(
     )
 
     regions: list[tuple[float, float, str]] = []
-    export_label_set = set(export_labels)
+    export_label_set = set(label_names if export_labels is None else export_labels)
     for class_index, label in enumerate(label_names):
         if label not in export_label_set:
             continue
@@ -224,9 +213,9 @@ def scores_for_plot(result: InferenceResult) -> np.ndarray:
         attribute_threshold=float(result.attribute_threshold),
         instance_sec=float(result.instance_sec),
         median_filter_sec=result.median_filter_sec,
-        filtered_labels=("approval", "disapproval"),
+        filtered_labels=None,
     )
-    for label in ("approval", "disapproval"):
+    for label in result.label_names:
         if label in result.label_names:
             label_index = result.label_names.index(label)
             plot_scores[:, label_index] = predicted_binary[:, label_index].astype(np.float32)
@@ -269,12 +258,11 @@ def run_audio_inference(
     num_bins = int(np.ceil(audio_duration_sec / instance_sec))
     if aggregated_scores is None:
         aggregated_scores = np.zeros((num_bins, 0), dtype=np.float32)
-    scores = _scores_with_fixed_label_order(
+    scores, label_names = _scores_with_fixed_label_order(
         aggregated_scores,
         active_label_names,
         num_bins=num_bins,
     )
-    label_names = tuple(infer_utils.PLOTTED_LABEL_ORDER)
     predicted_regions = predicted_regions_with_median_filter(
         scores,
         label_names=list(label_names),

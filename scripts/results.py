@@ -28,6 +28,15 @@ TASK_LABELS = {
 }
 
 
+def enabled_task_labels(config: dict[str, Any]) -> dict[str, str]:
+    tasks_config = config.get("tasks") or {}
+    return {
+        task_name: label_name
+        for task_name, label_name in TASK_LABELS.items()
+        if bool((tasks_config.get(task_name) or {}).get("enabled", True))
+    }
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compute strong validation results for a trained checkpoint")
     parser.add_argument("--config", required=True, help="Path to YAML config")
@@ -80,14 +89,18 @@ def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.devic
     return model
 
 
-def thresholds_from_config(config: dict[str, Any]) -> dict[str, float]:
+def thresholds_from_config(config: dict[str, Any], task_labels: dict[str, str]) -> dict[str, float]:
     val_config = config.get("val", {})
     event_threshold = float(val_config.get("event_threshold", val_config.get("threshold", 0.5)))
     attribute_threshold = float(val_config.get("attribute_threshold", val_config.get("threshold", 0.5)))
-    return {
+    thresholds = {
         "relevant_event": event_threshold,
         "approval": attribute_threshold,
         "disapproval": attribute_threshold,
+    }
+    return {
+        label_name: thresholds[label_name]
+        for label_name in task_labels.values()
     }
 
 
@@ -133,6 +146,7 @@ def compute_strong_results(
     model: CrowdReactionModel,
     val_loader: DataLoader,
     strong_events_by_task,
+    task_labels: dict[str, str],
     thresholds: dict[str, float],
     instance_sec: float,
     event_collar_sec: float,
@@ -146,7 +160,7 @@ def compute_strong_results(
             speech_durations[event.speech_id] = max(speech_durations.get(event.speech_id, 0.0), float(event.offset_sec))
 
     metrics: dict[str, dict[str, Any]] = {}
-    for task_name, label_name in TASK_LABELS.items():
+    for task_name, label_name in task_labels.items():
         task_events = strong_events_by_task.get(task_name, [])
         task_predictions = chunk_predictions_by_task.get(task_name, [])
         if not task_events and not task_predictions:
@@ -179,11 +193,13 @@ def main() -> None:
     val_loader = build_val_loader(config, split_data.val_records, batch_size=args.batch_size)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = load_model(config, str(checkpoint_path), device)
-    thresholds = thresholds_from_config(config)
+    task_labels = enabled_task_labels(config)
+    thresholds = thresholds_from_config(config, task_labels)
     metrics = compute_strong_results(
         model=model,
         val_loader=val_loader,
         strong_events_by_task=split_data.strong_events_by_task,
+        task_labels=task_labels,
         thresholds=thresholds,
         instance_sec=float(config["data"]["instance_sec"]),
         event_collar_sec=float(config["val"].get("event_collar_sec", config["data"]["instance_sec"])),

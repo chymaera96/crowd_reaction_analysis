@@ -23,7 +23,7 @@ if str(SRC) not in sys.path:
 
 from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
 from crowd_reaction.eval import collect_strong_predictions, evaluate_multitask_weak, evaluate_strong
-from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss, mmm_bag_loss_from_probs
+from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss
 
 
 TASK_SPECS = {
@@ -113,31 +113,18 @@ def compute_multitask_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     total_loss = None
     loss_values: dict[str, float] = {}
-    conditional_attribute_loss = bool(loss_config.get("conditional_attribute_loss", False))
-    event_probs = None
-    if conditional_attribute_loss and "event" in outputs.instance_logits:
-        event_probs = torch.sigmoid(outputs.instance_logits["event"]).detach()
 
     for task_name, spec in TASK_SPECS.items():
         if task_name not in outputs.instance_logits:
             continue
         target_tensor = batch_targets[spec["target_key"]]
         mask_tensor = batch_targets[spec["mask_key"]]
-        if task_name != "event" and conditional_attribute_loss and event_probs is not None:
-            task_probs = event_probs * torch.sigmoid(outputs.instance_logits[task_name])
-            task_loss = mmm_bag_loss_from_probs(
-                task_probs,
-                target_tensor,
-                class_weights=task_class_weights.get(task_name),
-                bag_mask=mask_tensor,
-            )
-        else:
-            task_loss = mmm_bag_loss(
-                outputs.instance_logits[task_name],
-                target_tensor,
-                class_weights=task_class_weights.get(task_name),
-                bag_mask=mask_tensor,
-            )
+        task_loss = mmm_bag_loss(
+            outputs.instance_logits[task_name],
+            target_tensor,
+            class_weights=task_class_weights.get(task_name),
+            bag_mask=mask_tensor,
+        )
         if task_name == "event":
             weighted_loss = task_loss
         else:
@@ -156,6 +143,7 @@ def evaluate_epoch(
     val_loader: DataLoader,
     *,
     strong_events_by_task,
+    enabled_tasks: tuple[str, ...],
     instance_sec: float,
     threshold: float,
     event_collar_sec: float,
@@ -169,7 +157,7 @@ def evaluate_epoch(
     if any(strong_events_by_task.values()):
         speech_durations = speech_durations_from_records(val_loader.dataset.records)
         strong_metrics = {}
-        for task_name in ("event", "approval", "disapproval"):
+        for task_name in enabled_tasks:
             task_events = strong_events_by_task.get(task_name, [])
             task_predictions = chunk_predictions_by_task.get(task_name, [])
             if not task_events and not task_predictions:
@@ -226,10 +214,26 @@ def _finite_float(value: Any) -> float | None:
 def validation_score(metrics: dict[str, Any], metric_name: str) -> float:
     strong = metrics.get("strong")
     if strong is not None:
-        score = _finite_float(strong.get(metric_name))
-        if score is not None:
-            return score
-    return float(metrics["weak"]["event"]["macro_f1"])
+        task_scores = []
+        if metric_name in strong:
+            score = _finite_float(strong.get(metric_name))
+            if score is not None:
+                task_scores.append(score)
+        for task_name in ("approval", "disapproval"):
+            task_metrics = strong.get(task_name, {})
+            score = _finite_float(task_metrics.get(metric_name))
+            if score is not None:
+                task_scores.append(score)
+        if task_scores:
+            return float(np.mean(task_scores))
+    weak_scores = [
+        float(task_metrics["macro_f1"])
+        for task_metrics in metrics.get("weak", {}).values()
+        if "macro_f1" in task_metrics
+    ]
+    if weak_scores:
+        return float(np.mean(weak_scores))
+    return 0.0
 
 
 def _add_strong_task_payload(
@@ -255,7 +259,7 @@ def wandb_validation_payload(metrics: dict[str, Any]) -> dict[str, float | int |
     payload: dict[str, float | int | None] = {
         "epoch": int(metrics["epoch"]),
         "train.loss": float(metrics["train_loss"]),
-        "train.event_loss": float(metrics["train_event_loss"]),
+        "train.event_loss": metrics.get("train_event_loss"),
         "train.approval_loss": metrics.get("train_approval_loss"),
         "train.disapproval_loss": metrics.get("train_disapproval_loss"),
     }
@@ -381,6 +385,7 @@ def main() -> None:
             model,
             val_loader,
             strong_events_by_task=split_datasets.strong_events_by_task,
+            enabled_tasks=model.enabled_tasks,
             instance_sec=float(config["data"]["instance_sec"]),
             threshold=float(config["val"].get("threshold", 0.5)),
             event_collar_sec=float(config["val"].get("event_collar_sec", config["data"]["instance_sec"])),
@@ -389,7 +394,8 @@ def main() -> None:
         )
         metrics["epoch"] = epoch
         metrics["train_loss"] = running_totals["total_loss"] / max(batches, 1)
-        metrics["train_event_loss"] = running_totals["event_loss"] / max(batches, 1)
+        if "event_loss" in running_totals:
+            metrics["train_event_loss"] = running_totals["event_loss"] / max(batches, 1)
         if "approval_loss" in running_totals:
             metrics["train_approval_loss"] = running_totals["approval_loss"] / max(batches, 1)
         if "disapproval_loss" in running_totals:
@@ -439,7 +445,7 @@ def main() -> None:
                 {
                     "epoch": epoch,
                     "train_loss": metrics["train_loss"],
-                    "train_event_loss": metrics["train_event_loss"],
+                    "train_event_loss": metrics.get("train_event_loss"),
                     "train_approval_loss": metrics.get("train_approval_loss"),
                     "train_disapproval_loss": metrics.get("train_disapproval_loss"),
                     "val_segment_f1_score": segment_f1_score,

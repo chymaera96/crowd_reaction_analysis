@@ -180,11 +180,13 @@ class CrowdReactionModel(nn.Module):
 
     @staticmethod
     def _resolve_enabled_tasks(tasks_config: dict[str, dict[str, bool]] | None) -> tuple[str, ...]:
-        enabled = ["event"]
-        for task_name in ("approval", "disapproval"):
+        enabled = []
+        for task_name in ("event", "approval", "disapproval"):
             task_cfg = (tasks_config or {}).get(task_name, {})
             if bool(task_cfg.get("enabled", True)):
                 enabled.append(task_name)
+        if not enabled:
+            raise ValueError("At least one task must be enabled")
         return tuple(enabled)
 
     def forward(

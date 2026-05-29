@@ -4,7 +4,7 @@ wandb:
   enabled: false
   project: crowd-reaction-analysis
   entity: null
-  tags: []
+  tags: [ablation, attributes_only, beats]
   notes: null
   mode: online
 
@@ -41,7 +41,7 @@ model:
 
 tasks:
   event:
-    enabled: true
+    enabled: false
   approval:
     enabled: true
   disapproval:
