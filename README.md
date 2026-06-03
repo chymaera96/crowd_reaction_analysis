@@ -35,13 +35,18 @@ python scripts/api.py \
   --checkpoint outputs/w2v_tc1_alt/best_segment_f1.pt \
   --audio /path/to/input.wav \
   --output-dir api_outputs/example \
+  --mode polarity \
   --batch-size 1
 ```
 
 This writes:
-- `scores.json`: a dictionary with `relevant_event`, `approval`, and `disapproval` score lists
+- `scores.json`: a dictionary of score lists for the selected mode
 - `predicted_segments.csv`: `start_sec,duration,label` rows, matching the no-header Sonic Visualiser CSV from `scripts/infer.py`
 - `plot.png`: the same spectrogram and score plot style used by `scripts/infer.py`
+
+API modes:
+- `--mode polarity` is the default. It writes `relevant_event`, `approval`, and `disapproval` score functions, and exports predicted `approval`/`disapproval` spans after event conditioning.
+- `--mode event` writes only the `relevant_event` score function and exports `relevant_event` spans, with no approval/disapproval assignment.
 
 Python usage:
 
@@ -57,6 +62,7 @@ result = run_audio_inference(
     audio_path="/path/to/input.wav",
     config_path="configs/wav2vec2.yaml",
     checkpoint_path="outputs/w2v_tc1_alt/best_segment_f1.pt",
+    mode="polarity",
 )
 
 write_scores_json(result, "api_outputs/example/scores.json")
@@ -65,6 +71,7 @@ plot_inference_result(result, "api_outputs/example/plot.png")
 ```
 
 The approval and disapproval score functions are already event-conditioned, matching the plotted functions from `scripts/infer.py`.
+Use `mode="event"` when you only want relevant-event detection boxes.
 The returned `result` can be edited before plotting if you want to alter the score functions or predicted regions.
 The API defaults to CPU for portability. Use `--batch-size 1` or `--batch-size 2` on a laptop, and pass `--device cuda`, `--device cuda:0`, or `--device mps` only when that accelerator is available and working in your environment.
 Pass `--no-score-functions` to hide the probability curves and threshold lines in `plot.png`, leaving only the spectrogram and prediction/annotation spans.

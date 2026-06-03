@@ -601,6 +601,51 @@ def test_api_region_thresholding_matches_infer_event_gating() -> None:
     ]
 
 
+def test_api_event_mode_selects_only_relevant_event_outputs() -> None:
+    scores = np.array(
+        [
+            [0.2, 0.9, 0.1],
+            [0.8, 0.1, 0.9],
+        ],
+        dtype=np.float32,
+    )
+
+    selected_scores, selected_labels, export_labels = api_module._select_mode_outputs(
+        scores,
+        label_names=("relevant_event", "approval", "disapproval"),
+        active_label_names=["relevant_event", "approval", "disapproval"],
+        mode="event",
+    )
+
+    assert selected_labels == ("relevant_event",)
+    assert export_labels == ("relevant_event",)
+    assert np.allclose(selected_scores, np.array([[0.2], [0.8]], dtype=np.float32))
+
+
+def test_api_event_mode_exports_relevant_event_regions() -> None:
+    scores = np.array(
+        [
+            [0.2],
+            [0.8],
+            [0.9],
+            [0.1],
+        ],
+        dtype=np.float32,
+    )
+
+    regions = api_module.predicted_regions_with_median_filter(
+        scores,
+        label_names=["relevant_event"],
+        event_threshold=0.5,
+        attribute_threshold=0.5,
+        instance_sec=1.0,
+        median_filter_sec=0.0,
+        export_labels=("relevant_event",),
+    )
+
+    assert regions == [(1.0, 3.0, "relevant_event")]
+
+
 def test_api_median_filter_removes_short_predicted_regions() -> None:
     scores = np.array(
         [
@@ -744,5 +789,6 @@ def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.checkpoint == "outputs/run/best_segment_f1.pt"
     assert args.audio == "input.wav"
     assert args.output_dir == "api_outputs/example"
+    assert args.mode == "polarity"
     assert args.median_filter_sec == 3.0
     assert args.no_score_functions is True

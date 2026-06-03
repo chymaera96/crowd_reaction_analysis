@@ -24,6 +24,9 @@ import infer as infer_utils  # noqa: E402
 from crowd_reaction.data import WeakChunkDataset, chunk_records_for_strong_audio, collate_batch  # noqa: E402
 
 
+API_MODES = ("polarity", "event")
+
+
 @dataclass
 class InferenceResult:
     audio_path: str
@@ -35,6 +38,7 @@ class InferenceResult:
     scores: np.ndarray
     predicted_regions: list[tuple[float, float, str]]
     median_filter_sec: float | None = 3.0
+    mode: str = "polarity"
 
 
 def parse_args() -> argparse.Namespace:
@@ -43,6 +47,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--checkpoint", required=True, help="Path to trained model checkpoint")
     parser.add_argument("--audio", required=True, help="Input audio file")
     parser.add_argument("--output-dir", required=True, help="Directory to save API outputs")
+    parser.add_argument(
+        "--mode",
+        choices=API_MODES,
+        default="polarity",
+        help="polarity exports approval/disapproval boxes; event exports only relevant_event boxes",
+    )
     parser.add_argument("--event-threshold", type=float, default=None, help="Override relevant-event probability threshold")
     parser.add_argument("--attribute-threshold", type=float, default=None, help="Override approval/disapproval probability threshold")
     parser.add_argument("--batch-size", type=int, default=None, help="Override inference batch size")
@@ -130,6 +140,23 @@ def _scores_with_fixed_label_order(
         copy_bins = min(num_bins, aggregated_scores.shape[0])
         fixed_scores[:copy_bins, output_index] = aggregated_scores[:copy_bins, input_index]
     return fixed_scores
+
+
+def _select_mode_outputs(
+    scores: np.ndarray,
+    *,
+    label_names: tuple[str, ...],
+    active_label_names: list[str],
+    mode: str,
+) -> tuple[np.ndarray, tuple[str, ...], tuple[str, ...]]:
+    if mode == "polarity":
+        return scores, label_names, ("approval", "disapproval")
+    if mode == "event":
+        if "relevant_event" not in active_label_names:
+            raise ValueError("event mode requires a checkpoint with a relevant_event/event head")
+        event_index = label_names.index("relevant_event")
+        return scores[:, event_index : event_index + 1], ("relevant_event",), ("relevant_event",)
+    raise ValueError(f"Unknown API mode: {mode}")
 
 
 def _median_filter_binary(values: np.ndarray, *, kernel_bins: int) -> np.ndarray:
@@ -242,7 +269,10 @@ def run_audio_inference(
     median_filter_sec: float | None = 3.0,
     batch_size: int | None = None,
     device: str | torch.device | None = None,
+    mode: str = "polarity",
 ) -> InferenceResult:
+    if mode not in API_MODES:
+        raise ValueError(f"mode must be one of {API_MODES}, got {mode!r}")
     audio_path = Path(audio_path)
     config = infer_utils.load_config(str(config_path))
     resolved_device = _resolve_device(device)
@@ -275,6 +305,12 @@ def run_audio_inference(
         num_bins=num_bins,
     )
     label_names = tuple(infer_utils.PLOTTED_LABEL_ORDER)
+    scores, label_names, export_labels = _select_mode_outputs(
+        scores,
+        label_names=label_names,
+        active_label_names=active_label_names,
+        mode=mode,
+    )
     predicted_regions = predicted_regions_with_median_filter(
         scores,
         label_names=list(label_names),
@@ -282,10 +318,12 @@ def run_audio_inference(
         attribute_threshold=resolved_attribute_threshold,
         instance_sec=instance_sec,
         median_filter_sec=median_filter_sec,
+        export_labels=export_labels,
     )
     times_sec = (np.arange(num_bins, dtype=np.float32) + 0.5) * instance_sec
     return InferenceResult(
         audio_path=str(audio_path),
+        mode=mode,
         instance_sec=instance_sec,
         event_threshold=resolved_event_threshold,
         attribute_threshold=resolved_attribute_threshold,
@@ -382,6 +420,7 @@ def main() -> None:
         median_filter_sec=args.median_filter_sec,
         batch_size=args.batch_size,
         device=args.device,
+        mode=args.mode,
     )
 
     output_dir = Path(args.output_dir)

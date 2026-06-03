@@ -44,6 +44,7 @@ TASK_EXPORT_SPECS = {
     "disapproval": ["disapproval"],
 }
 PREDICTION_COLORS = {
+    "relevant_event": "#000000",
     "approval": "#2ca02c",
     "disapproval": "#d62728",
 }
@@ -516,7 +517,7 @@ def overlay_events(
         )
         current_band += 1
 
-    for label in ("approval", "disapproval"):
+    for label in ("relevant_event", "approval", "disapproval"):
         pred_intervals = [(onset_sec, offset_sec) for onset_sec, offset_sec, region_label in predicted_regions if region_label == label]
         if not pred_intervals:
             continue
@@ -570,7 +571,6 @@ def plot_speech(
     )
     fig.colorbar(image, ax=ax, format="%+2.0f dB")
 
-    event_index = label_names.index("relevant_event")
     overlay_events(
         ax,
         predicted_regions=predicted_regions,
@@ -578,9 +578,12 @@ def plot_speech(
         instance_sec=instance_sec,
     )
 
-    ax.set_title(
-        f"{truncate_plot_title(speech_id)} | event={event_threshold:.2f} | attr={attribute_threshold:.2f}"
-    )
+    title_parts = [f"{truncate_plot_title(speech_id)}"]
+    if "relevant_event" in label_names:
+        title_parts.append(f"event={event_threshold:.2f}")
+    if any(label in label_names for label in ("approval", "disapproval")):
+        title_parts.append(f"attr={attribute_threshold:.2f}")
+    ax.set_title(" | ".join(title_parts))
     ax.set_xlabel("Time (mm:ss)")
     ax.set_ylabel("Frequency (Hz)")
     ax.xaxis.set_major_locator(MaxNLocator(nbins=12))
@@ -606,22 +609,24 @@ def plot_speech(
                 drawstyle="steps-mid",
                 label=f"Score {label_name}",
             )
-        score_ax.axhline(
-            event_threshold,
-            color=SCORE_LINE_COLORS["relevant_event"],
-            linestyle="--",
-            linewidth=1.0,
-            alpha=0.55,
-            label="Event threshold",
-        )
-        score_ax.axhline(
-            attribute_threshold,
-            color="#444444",
-            linestyle=":",
-            linewidth=1.0,
-            alpha=0.65,
-            label="Approval/disapproval threshold",
-        )
+        if "relevant_event" in label_names:
+            score_ax.axhline(
+                event_threshold,
+                color=SCORE_LINE_COLORS["relevant_event"],
+                linestyle="--",
+                linewidth=1.0,
+                alpha=0.55,
+                label="Event threshold",
+            )
+        if any(label in label_names for label in ("approval", "disapproval")):
+            score_ax.axhline(
+                attribute_threshold,
+                color="#444444",
+                linestyle=":",
+                linewidth=1.0,
+                alpha=0.65,
+                label="Approval/disapproval threshold",
+            )
         score_ax.set_ylim(0.0, 1.0)
         score_ax.set_ylabel("Predicted probability")
         score_ax.grid(False)
