@@ -549,6 +549,8 @@ def plot_speech(
     attribute_threshold: float,
     output_path: Path,
     plot_score_functions: bool = True,
+    score_axis_max: float = 1.0,
+    score_alpha: float = 0.95,
 ) -> None:
     waveform, sr = torchaudio.load(audio_path)
     if sr != sample_rate:
@@ -605,7 +607,7 @@ def plot_speech(
                 predicted_probs[:, class_index],
                 color=SCORE_LINE_COLORS[label_name],
                 linewidth=linewidth,
-                alpha=0.95,
+                alpha=score_alpha,
                 drawstyle="steps-mid",
                 label=f"Score {label_name}",
             )
@@ -627,7 +629,7 @@ def plot_speech(
                 alpha=0.65,
                 label="Approval/disapproval threshold",
             )
-        score_ax.set_ylim(0.0, 1.0)
+        score_ax.set_ylim(0.0, float(score_axis_max))
         score_ax.set_ylabel("Predicted probability")
         score_ax.grid(False)
         score_ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))

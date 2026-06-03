@@ -391,6 +391,8 @@ def plot_inference_result(
         attribute_threshold=float(result.attribute_threshold),
         output_path=Path(output_path),
         plot_score_functions=plot_score_functions,
+        score_axis_max=2.0,
+        score_alpha=0.4,
     )
 
 
@@ -417,6 +419,8 @@ def _plot_inference_result_with_config(
         attribute_threshold=float(attribute_threshold),
         output_path=output_path,
         plot_score_functions=plot_score_functions,
+        score_axis_max=2.0,
+        score_alpha=0.4,
     )
 
 
