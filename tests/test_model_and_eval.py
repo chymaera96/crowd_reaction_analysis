@@ -791,4 +791,5 @@ def test_api_parse_args(monkeypatch: pytest.MonkeyPatch) -> None:
     assert args.output_dir == "api_outputs/example"
     assert args.mode == "polarity"
     assert args.median_filter_sec == 3.0
+    assert args.no_progress is False
     assert args.no_score_functions is True

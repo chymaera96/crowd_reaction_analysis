@@ -12,6 +12,7 @@ import numpy as np
 import torch
 import torchaudio
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -69,6 +70,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Hide probability score functions and threshold lines from plot.png",
     )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable the inference batch progress bar",
+    )
     return parser.parse_args()
 
 
@@ -124,6 +130,12 @@ def _build_single_audio_loader(
         collate_fn=collate_batch,
     )
     return loader, audio_duration_sec
+
+
+def _progress_loader(loader: DataLoader, *, enabled: bool):
+    if not enabled:
+        return loader
+    return tqdm(loader, total=len(loader), desc="Inference batches", unit="batch")
 
 
 def _scores_with_fixed_label_order(
@@ -270,6 +282,7 @@ def run_audio_inference(
     batch_size: int | None = None,
     device: str | torch.device | None = None,
     mode: str = "polarity",
+    show_progress: bool = True,
 ) -> InferenceResult:
     if mode not in API_MODES:
         raise ValueError(f"mode must be one of {API_MODES}, got {mode!r}")
@@ -287,7 +300,11 @@ def run_audio_inference(
         batch_size=batch_size,
     )
     model = infer_utils.load_model(config, str(checkpoint_path), resolved_device)
-    chunk_predictions_by_task = infer_utils.collect_multitask_chunk_predictions(model, loader, device=resolved_device)
+    chunk_predictions_by_task = infer_utils.collect_multitask_chunk_predictions(
+        model,
+        _progress_loader(loader, enabled=show_progress),
+        device=resolved_device,
+    )
     active_label_names = infer_utils.active_label_order(chunk_predictions_by_task)
     aggregated_by_speech = infer_utils.aggregate_multitask_probs(
         chunk_predictions_by_task,
@@ -421,6 +438,7 @@ def main() -> None:
         batch_size=args.batch_size,
         device=args.device,
         mode=args.mode,
+        show_progress=not args.no_progress,
     )
 
     output_dir = Path(args.output_dir)
