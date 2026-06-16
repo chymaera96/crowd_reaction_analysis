@@ -28,6 +28,7 @@ model:
 ```
 
 Update `model.beats_checkpoint_path` before using the BEATs config on a new machine.
+The BEATs checkpoint can be downloaded from [here](https://1drv.ms/u/s!AqeByhGUtINrgcpj8ujXH1YUtxooEg?e=E9Ncea).
 
 wav2vec2 uses Hugging Face Transformers:
 
