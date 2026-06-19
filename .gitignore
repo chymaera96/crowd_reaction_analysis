@@ -2,13 +2,7 @@ __pycache__/
 .pytest_cache/
 *.pyc
 data/
-tc1/
-tc2/
-tc3/
-tc4/
-tc5/
-tc5_alt2/
-w2v_tc0/
-w2v_tc1/
-w2v_tc1_alt/
-w2v_tc1_alt2/
+*.png
+*.csv
+*.json
+outputs/
