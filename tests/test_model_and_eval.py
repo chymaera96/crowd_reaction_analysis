@@ -4,6 +4,7 @@ import importlib.util
 import json
 import math
 import sys
+import types
 from types import SimpleNamespace
 from pathlib import Path
 
@@ -14,7 +15,14 @@ import yaml
 
 from crowd_reaction.data import StrongEvent, parse_strong_label_file_by_task
 from crowd_reaction.eval import SpeechChunkPrediction, evaluate_multitask_weak, evaluate_strong
-from crowd_reaction.model import CrowdReactionModel, DummyFeatureExtractor, mmm_bag_loss, mmm_bag_loss_from_probs
+from crowd_reaction.model import (
+    CrowdReactionModel,
+    DummyFeatureExtractor,
+    FrozenWav2Vec2FeatureExtractor,
+    Wav2Vec2LayerScalarMix,
+    mmm_bag_loss,
+    mmm_bag_loss_from_probs,
+)
 
 
 _INFER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "infer.py"
@@ -375,6 +383,77 @@ def test_wav2vec2_style_feature_extractor_supports_half_second_bins() -> None:
     assert embeddings.shape == (2, 40, 8)
 
 
+def test_wav2vec2_scalar_mix_initializes_uniform_with_gamma() -> None:
+    scalar_mix = Wav2Vec2LayerScalarMix(num_layers=4)
+    layer_features = [
+        torch.full((2, 3, 4), 1.0),
+        torch.full((2, 3, 4), 3.0),
+        torch.full((2, 3, 4), 5.0),
+        torch.full((2, 3, 4), 7.0),
+    ]
+
+    mixed = scalar_mix(layer_features)
+
+    assert torch.allclose(torch.softmax(scalar_mix.scalar_weights, dim=0), torch.full((4,), 0.25))
+    assert torch.isclose(scalar_mix.gamma.detach(), torch.tensor(1.0))
+    assert torch.allclose(mixed, torch.full((2, 3, 4), 4.0))
+
+
+def test_wav2vec2_scalar_mix_parameters_receive_gradients() -> None:
+    scalar_mix = Wav2Vec2LayerScalarMix(num_layers=4)
+    layer_features = [
+        torch.full((1, 2, 3), 0.0),
+        torch.full((1, 2, 3), 1.0),
+        torch.full((1, 2, 3), 3.0),
+        torch.full((1, 2, 3), 6.0),
+    ]
+
+    loss = scalar_mix(layer_features).square().mean()
+    loss.backward()
+
+    assert scalar_mix.scalar_weights.grad is not None
+    assert float(scalar_mix.scalar_weights.grad.abs().sum().item()) > 0.0
+    assert scalar_mix.gamma.grad is not None
+    assert float(scalar_mix.gamma.grad.abs().sum().item()) > 0.0
+
+
+def test_frozen_wav2vec2_extractor_selects_configured_hidden_layers(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeWav2Vec2Encoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4)
+            self.encoder_weight = torch.nn.Parameter(torch.tensor(1.0))
+
+        def forward(self, waveform: torch.Tensor, *, output_hidden_states: bool = False):
+            assert output_hidden_states is True
+            batch = waveform.shape[0]
+            hidden_states = tuple(
+                torch.full((batch, 7, 4), float(layer_index), device=waveform.device)
+                for layer_index in range(13)
+            )
+            return SimpleNamespace(hidden_states=hidden_states)
+
+    class FakeWav2Vec2Model:
+        @staticmethod
+        def from_pretrained(model_name: str) -> FakeWav2Vec2Encoder:
+            assert model_name == "fake/wav2vec2"
+            return FakeWav2Vec2Encoder()
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.Wav2Vec2Model = FakeWav2Vec2Model
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    extractor = FrozenWav2Vec2FeatureExtractor("fake/wav2vec2", layer_indices=[3, 6, 9, 12])
+    embeddings = extractor(torch.randn(2, 40, 8000))
+
+    assert embeddings.shape == (2, 40, 4)
+    assert torch.allclose(embeddings, torch.full((2, 40, 4), 7.5))
+    assert extractor.layer_indices == (3, 6, 9, 12)
+    assert all(not parameter.requires_grad for parameter in extractor.encoder.parameters())
+    assert extractor.scalar_mix.scalar_weights.requires_grad
+    assert extractor.scalar_mix.gamma.requires_grad
+
+
 def test_model_with_wav2vec2_style_features_outputs_half_second_logits() -> None:
     model = CrowdReactionModel(
         feature_extractor=DummyWav2Vec2StyleFeatureExtractor(output_dim=8),
@@ -400,6 +479,7 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     assert default_config["loss"]["conditional_attribute_loss"] is True
     assert default_config["augmentation"]["enabled"] is True
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
+    assert wav2vec2_config["model"]["wav2vec2_layer_indices"] == [3, 6, 9, 12]
     assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
     assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True

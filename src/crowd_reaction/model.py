@@ -77,8 +77,27 @@ class FrozenBEATsFeatureExtractor(nn.Module):
         return pooled.view(batch, steps, self.output_dim)
 
 
+class Wav2Vec2LayerScalarMix(nn.Module):
+    def __init__(self, num_layers: int) -> None:
+        super().__init__()
+        if int(num_layers) <= 0:
+            raise ValueError("num_layers must be positive")
+        self.scalar_weights = nn.Parameter(torch.zeros(int(num_layers), dtype=torch.float32))
+        self.gamma = nn.Parameter(torch.tensor(1.0, dtype=torch.float32))
+
+    def forward(self, layer_features: list[torch.Tensor] | tuple[torch.Tensor, ...]) -> torch.Tensor:
+        if len(layer_features) != self.scalar_weights.numel():
+            raise ValueError(
+                f"Expected {self.scalar_weights.numel()} layer tensors, got {len(layer_features)}"
+            )
+        stacked = torch.stack(list(layer_features), dim=0)
+        weights = torch.softmax(self.scalar_weights, dim=0)
+        view_shape = (weights.shape[0],) + (1,) * (stacked.dim() - 1)
+        return self.gamma * (stacked * weights.view(view_shape)).sum(dim=0)
+
+
 class FrozenWav2Vec2FeatureExtractor(nn.Module):
-    def __init__(self, model_name: str = "facebook/wav2vec2-base") -> None:
+    def __init__(self, model_name: str = "facebook/wav2vec2-base", layer_indices: tuple[int, ...] | list[int] = (3, 6, 9, 12)) -> None:
         super().__init__()
         try:
             from transformers import Wav2Vec2Model
@@ -90,6 +109,10 @@ class FrozenWav2Vec2FeatureExtractor(nn.Module):
 
         self.encoder = Wav2Vec2Model.from_pretrained(model_name)
         self.output_dim = int(self.encoder.config.hidden_size)
+        self.layer_indices = tuple(int(index) for index in layer_indices)
+        if not self.layer_indices:
+            raise ValueError("layer_indices must contain at least one hidden-state index")
+        self.scalar_mix = Wav2Vec2LayerScalarMix(len(self.layer_indices))
 
         for parameter in self.encoder.parameters():
             parameter.requires_grad = False
@@ -106,9 +129,21 @@ class FrozenWav2Vec2FeatureExtractor(nn.Module):
         waveform = waveform - waveform.mean(dim=1, keepdim=True)
         waveform = waveform / waveform.std(dim=1, keepdim=True, unbiased=False).clamp_min(1e-7)
         with torch.no_grad():
-            features = self.encoder(waveform).last_hidden_state
-            pooled = F.adaptive_avg_pool1d(features.transpose(1, 2), output_size=steps).transpose(1, 2)
-        return pooled
+            outputs = self.encoder(waveform, output_hidden_states=True)
+            hidden_states = outputs.hidden_states
+            if hidden_states is None:
+                raise RuntimeError("Wav2Vec2Model did not return hidden states")
+            missing_indices = [index for index in self.layer_indices if index >= len(hidden_states) or index < -len(hidden_states)]
+            if missing_indices:
+                raise ValueError(
+                    f"Requested wav2vec2 hidden-state indices {missing_indices}, "
+                    f"but model returned {len(hidden_states)} hidden-state tensors"
+                )
+            pooled_layers = [
+                F.adaptive_avg_pool1d(hidden_states[index].transpose(1, 2), output_size=steps).transpose(1, 2)
+                for index in self.layer_indices
+            ]
+        return self.scalar_mix(pooled_layers)
 
 
 class TemporalClassifierHead(nn.Module):
@@ -141,6 +176,7 @@ class CrowdReactionModel(nn.Module):
         encoder_type: str = "beats",
         beats_checkpoint_path: str | None = None,
         wav2vec2_model_name: str = "facebook/wav2vec2-base",
+        wav2vec2_layer_indices: tuple[int, ...] | list[int] = (3, 6, 9, 12),
         head_hidden_dim: int = 256,
         head_dropout: float = 0.1,
         sample_rate: int = 16000,
@@ -156,7 +192,10 @@ class CrowdReactionModel(nn.Module):
                     raise ValueError("beats_checkpoint_path is required when encoder_type='beats'")
                 feature_extractor = FrozenBEATsFeatureExtractor(beats_checkpoint_path)
             elif encoder_type == "wav2vec2":
-                feature_extractor = FrozenWav2Vec2FeatureExtractor(wav2vec2_model_name)
+                feature_extractor = FrozenWav2Vec2FeatureExtractor(
+                    wav2vec2_model_name,
+                    layer_indices=wav2vec2_layer_indices,
+                )
             else:
                 raise ValueError(f"Unsupported encoder_type: {encoder_type}")
         self.feature_extractor = feature_extractor

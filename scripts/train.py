@@ -15,6 +15,7 @@ import numpy as np
 import torch
 import yaml
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC = ROOT / "src"
@@ -43,6 +44,11 @@ def parse_args() -> argparse.Namespace:
         default=None,
         choices=("online", "offline", "disabled"),
         help="Override W&B mode for this run",
+    )
+    parser.add_argument(
+        "--no-progress",
+        action="store_true",
+        help="Disable training and validation progress bars",
     )
     return parser.parse_args()
 
@@ -161,8 +167,21 @@ def evaluate_epoch(
     event_collar_sec: float,
     event_offset_ratio: float,
     device: torch.device,
+    show_progress: bool = True,
+    epoch: int | None = None,
+    total_epochs: int | None = None,
 ) -> dict[str, Any]:
-    weak_predictions, chunk_predictions_by_task = collect_strong_predictions(model, val_loader, device=device)
+    desc = "Validation"
+    if epoch is not None and total_epochs is not None:
+        desc = f"Epoch {epoch}/{total_epochs} val"
+    elif epoch is not None:
+        desc = f"Epoch {epoch} val"
+    val_batches = (
+        tqdm(val_loader, total=len(val_loader), desc=desc, unit="batch", leave=False)
+        if show_progress
+        else val_loader
+    )
+    weak_predictions, chunk_predictions_by_task = collect_strong_predictions(model, val_batches, device=device)
     weak_metrics = evaluate_multitask_weak(weak_predictions, threshold=threshold)
 
     strong_metrics: dict[str, Any] | None = None
@@ -333,6 +352,7 @@ def main() -> None:
         encoder_type=config["model"].get("encoder_type", "beats"),
         beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
         wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
+        wav2vec2_layer_indices=config["model"].get("wav2vec2_layer_indices", [3, 6, 9, 12]),
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),
@@ -342,7 +362,7 @@ def main() -> None:
     ).to(device)
 
     optimizer = torch.optim.AdamW(
-        model.heads.parameters(),
+        [parameter for parameter in model.parameters() if parameter.requires_grad],
         lr=float(config["optimizer"]["lr"]),
         weight_decay=float(config["optimizer"].get("weight_decay", 0.0)),
     )
@@ -353,12 +373,19 @@ def main() -> None:
     best_event_f1 = float("-inf")
     history = []
 
-    for epoch in range(1, int(config["trainer"]["epochs"]) + 1):
+    show_progress = not bool(args.no_progress)
+    total_epochs = int(config["trainer"]["epochs"])
+    for epoch in range(1, total_epochs + 1):
         model.train()
         running_totals = defaultdict(float)
         batches = 0
 
-        for batch in train_loader:
+        train_batches = (
+            tqdm(train_loader, total=len(train_loader), desc=f"Epoch {epoch}/{total_epochs} train", unit="batch", leave=False)
+            if show_progress
+            else train_loader
+        )
+        for batch in train_batches:
             optimizer.zero_grad()
             instances = batch["instances"].to(device)
             batch_targets = {key: value.to(device) for key, value in batch["targets"].items()}
@@ -375,6 +402,8 @@ def main() -> None:
             for key, value in loss_values.items():
                 running_totals[key] += value
             batches += 1
+            if show_progress:
+                train_batches.set_postfix(loss=f"{running_totals['total_loss'] / max(batches, 1):.4f}")
 
         model.eval()
         metrics = evaluate_epoch(
@@ -386,6 +415,9 @@ def main() -> None:
             event_collar_sec=float(config["val"].get("event_collar_sec", config["data"]["instance_sec"])),
             event_offset_ratio=float(config["val"].get("event_offset_ratio", 0.2)),
             device=device,
+            show_progress=show_progress,
+            epoch=epoch,
+            total_epochs=total_epochs,
         )
         metrics["epoch"] = epoch
         metrics["train_loss"] = running_totals["total_loss"] / max(batches, 1)
