@@ -467,36 +467,13 @@ def main() -> None:
         strong_disapproval = None if strong is None else strong.get("disapproval")
 
         print(
-            json.dumps(
-                {
-                    "epoch": epoch,
-                    "train_loss": metrics["train_loss"],
-                    "train_event_loss": metrics["train_event_loss"],
-                    "train_approval_loss": metrics.get("train_approval_loss"),
-                    "train_disapproval_loss": metrics.get("train_disapproval_loss"),
-                    "val_segment_f1_score": segment_f1_score,
-                    "val_event_f1_score": event_f1_score,
-                    "strong_segment_macro_precision": None
-                    if strong_event is None
-                    else strong_event["segment_macro_precision"],
-                    "strong_segment_macro_f1": None if strong_event is None else strong_event["segment_macro_f1"],
-                    "strong_event_precision": None if strong_event is None else strong_event["event_precision"],
-                    "strong_event_f1": None if strong_event is None else strong_event["event_f1"],
-                    "strong_approval_segment_macro_precision": None if strong_approval is None else strong_approval["segment_macro_precision"],
-                    "strong_approval_segment_macro_f1": None if strong_approval is None else strong_approval["segment_macro_f1"],
-                    "strong_approval_event_precision": None if strong_approval is None else strong_approval["event_precision"],
-                    "strong_approval_event_f1": None if strong_approval is None else strong_approval["event_f1"],
-                    "strong_disapproval_segment_macro_precision": None
-                    if strong_disapproval is None
-                    else strong_disapproval["segment_macro_precision"],
-                    "strong_disapproval_segment_macro_f1": None
-                    if strong_disapproval is None
-                    else strong_disapproval["segment_macro_f1"],
-                    "strong_disapproval_event_precision": None
-                    if strong_disapproval is None
-                    else strong_disapproval["event_precision"],
-                    "strong_disapproval_event_f1": None if strong_disapproval is None else strong_disapproval["event_f1"],
-                }
+            " | ".join(
+                [
+                    f"epoch {epoch}/{total_epochs}",
+                    f"train_loss={metrics['train_loss']:.4f}",
+                    f"segment_f1={segment_f1_score:.4f}",
+                    f"event_f1={event_f1_score:.4f}",
+                ]
             )
         )
         if wandb_run is not None:
