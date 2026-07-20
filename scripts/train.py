@@ -40,6 +40,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and metrics")
     parser.add_argument("--run-id", default=None, help="Run identifier used for W&B and checkpoint subdirectory naming")
     parser.add_argument(
+        "--wav2vec2-layer",
+        type=int,
+        choices=range(1, 13),
+        default=None,
+        metavar="N",
+        help="Override the wav2vec2 transformer layer (1-12)",
+    )
+    parser.add_argument(
         "--wandb-mode",
         default=None,
         choices=("online", "offline", "disabled"),
@@ -56,6 +64,12 @@ def parse_args() -> argparse.Namespace:
 def load_config(config_path: str) -> dict[str, Any]:
     with open(config_path, "r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
+
+
+def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    if args.wav2vec2_layer is not None:
+        config.setdefault("model", {})["wav2vec2_layer_index"] = int(args.wav2vec2_layer)
+    return config
 
 
 def _import_wandb():
@@ -319,7 +333,7 @@ def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, 
 
 def main() -> None:
     args = parse_args()
-    config = load_config(args.config)
+    config = apply_cli_overrides(load_config(args.config), args)
     output_dir = Path(args.output_dir)
     if args.run_id:
         output_dir = output_dir / args.run_id
@@ -352,7 +366,7 @@ def main() -> None:
         encoder_type=config["model"].get("encoder_type", "beats"),
         beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
         wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
-        wav2vec2_layer_indices=config["model"].get("wav2vec2_layer_indices", [3, 6, 9, 12]),
+        wav2vec2_layer_index=int(config["model"].get("wav2vec2_layer_index", 3)),
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),

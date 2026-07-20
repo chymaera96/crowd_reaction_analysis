@@ -19,7 +19,6 @@ from crowd_reaction.model import (
     CrowdReactionModel,
     DummyFeatureExtractor,
     FrozenWav2Vec2FeatureExtractor,
-    Wav2Vec2LayerScalarMix,
     mmm_bag_loss,
     mmm_bag_loss_from_probs,
 )
@@ -290,6 +289,65 @@ def test_results_parse_args_defaults_output_to_none(monkeypatch: pytest.MonkeyPa
     assert args.output is None
 
 
+def test_train_wav2vec2_layer_cli_override_is_applied_to_effective_config() -> None:
+    config = {"model": {"wav2vec2_layer_index": 8}}
+    args = SimpleNamespace(wav2vec2_layer=3)
+
+    effective = train_module.apply_cli_overrides(config, args)
+
+    assert effective["model"]["wav2vec2_layer_index"] == 3
+
+
+@pytest.mark.parametrize("module", [infer_module, results_module])
+def test_evaluation_loads_wav2vec2_layer_from_checkpoint_config(
+    monkeypatch: pytest.MonkeyPatch, module
+) -> None:
+    constructed: dict[str, object] = {}
+
+    class FakeModel:
+        def __init__(self, **kwargs) -> None:
+            constructed.update(kwargs)
+
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state_dict) -> None:
+            constructed["state_dict"] = state_dict
+
+        def eval(self) -> None:
+            constructed["eval"] = True
+
+    checkpoint = {
+        "model_state_dict": {"heads.event.weight": torch.ones(1)},
+        "config": {"model": {"wav2vec2_layer_index": 7}},
+    }
+    monkeypatch.setattr(module, "CrowdReactionModel", FakeModel)
+    monkeypatch.setattr(module.torch, "load", lambda *args, **kwargs: checkpoint)
+    config = {
+        "model": {"encoder_type": "wav2vec2", "wav2vec2_layer_index": 2},
+        "data": {"sample_rate": 16000, "chunk_sec": 20.0, "instance_sec": 0.5},
+    }
+
+    module.load_model(config, "checkpoint.pt", torch.device("cpu"))
+
+    assert constructed["wav2vec2_layer_index"] == 7
+    assert constructed["eval"] is True
+
+
+@pytest.mark.parametrize("module", [infer_module, results_module])
+def test_evaluation_rejects_scalar_fusion_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, module
+) -> None:
+    checkpoint = {
+        "model_state_dict": {"feature_extractor.scalar_mix.gamma": torch.tensor(1.0)},
+        "config": {"model": {"wav2vec2_layer_indices": [3, 6, 9, 12]}},
+    }
+    monkeypatch.setattr(module.torch, "load", lambda *args, **kwargs: checkpoint)
+
+    with pytest.raises(RuntimeError, match="obsolete wav2vec2 scalar layer fusion"):
+        module.load_model({"model": {}, "data": {}}, "checkpoint.pt", torch.device("cpu"))
+
+
 def test_parse_strong_label_file_by_task_splits_event_and_attributes(tmp_path: Path) -> None:
     txt_path = tmp_path / "noise_sample.txt"
     txt_path.write_text(
@@ -383,45 +441,14 @@ def test_wav2vec2_style_feature_extractor_supports_half_second_bins() -> None:
     assert embeddings.shape == (2, 40, 8)
 
 
-def test_wav2vec2_scalar_mix_initializes_uniform_with_gamma() -> None:
-    scalar_mix = Wav2Vec2LayerScalarMix(num_layers=4)
-    layer_features = [
-        torch.full((2, 3, 4), 1.0),
-        torch.full((2, 3, 4), 3.0),
-        torch.full((2, 3, 4), 5.0),
-        torch.full((2, 3, 4), 7.0),
-    ]
-
-    mixed = scalar_mix(layer_features)
-
-    assert torch.allclose(torch.softmax(scalar_mix.scalar_weights, dim=0), torch.full((4,), 0.25))
-    assert torch.isclose(scalar_mix.gamma.detach(), torch.tensor(1.0))
-    assert torch.allclose(mixed, torch.full((2, 3, 4), 4.0))
-
-
-def test_wav2vec2_scalar_mix_parameters_receive_gradients() -> None:
-    scalar_mix = Wav2Vec2LayerScalarMix(num_layers=4)
-    layer_features = [
-        torch.full((1, 2, 3), 0.0),
-        torch.full((1, 2, 3), 1.0),
-        torch.full((1, 2, 3), 3.0),
-        torch.full((1, 2, 3), 6.0),
-    ]
-
-    loss = scalar_mix(layer_features).square().mean()
-    loss.backward()
-
-    assert scalar_mix.scalar_weights.grad is not None
-    assert float(scalar_mix.scalar_weights.grad.abs().sum().item()) > 0.0
-    assert scalar_mix.gamma.grad is not None
-    assert float(scalar_mix.gamma.grad.abs().sum().item()) > 0.0
-
-
-def test_frozen_wav2vec2_extractor_selects_configured_hidden_layers(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("layer_index", [1, 3, 12])
+def test_frozen_wav2vec2_extractor_selects_one_configured_hidden_layer(
+    monkeypatch: pytest.MonkeyPatch, layer_index: int
+) -> None:
     class FakeWav2Vec2Encoder(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
-            self.config = SimpleNamespace(hidden_size=4)
+            self.config = SimpleNamespace(hidden_size=4, num_hidden_layers=12)
             self.encoder_weight = torch.nn.Parameter(torch.tensor(1.0))
 
         def forward(self, waveform: torch.Tensor, *, output_hidden_states: bool = False):
@@ -443,15 +470,51 @@ def test_frozen_wav2vec2_extractor_selects_configured_hidden_layers(monkeypatch:
     fake_transformers.Wav2Vec2Model = FakeWav2Vec2Model
     monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
 
-    extractor = FrozenWav2Vec2FeatureExtractor("fake/wav2vec2", layer_indices=[3, 6, 9, 12])
+    extractor = FrozenWav2Vec2FeatureExtractor("fake/wav2vec2", layer_index=layer_index)
     embeddings = extractor(torch.randn(2, 40, 8000))
 
     assert embeddings.shape == (2, 40, 4)
-    assert torch.allclose(embeddings, torch.full((2, 40, 4), 7.5))
-    assert extractor.layer_indices == (3, 6, 9, 12)
+    assert torch.allclose(embeddings, torch.full((2, 40, 4), float(layer_index)))
+    assert extractor.layer_index == layer_index
     assert all(not parameter.requires_grad for parameter in extractor.encoder.parameters())
-    assert extractor.scalar_mix.scalar_weights.requires_grad
-    assert extractor.scalar_mix.gamma.requires_grad
+    assert not any("scalar_mix" in name for name, _ in extractor.named_parameters())
+
+
+@pytest.mark.parametrize("layer_index", [0, 13])
+def test_frozen_wav2vec2_extractor_rejects_non_transformer_layers(
+    monkeypatch: pytest.MonkeyPatch, layer_index: int
+) -> None:
+    class FakeEncoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, num_hidden_layers=12)
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.Wav2Vec2Model = SimpleNamespace(from_pretrained=lambda _: FakeEncoder())
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    with pytest.raises(ValueError, match="between 1 and 12"):
+        FrozenWav2Vec2FeatureExtractor("fake/wav2vec2", layer_index=layer_index)
+
+
+def test_frozen_wav2vec2_extractor_rejects_unavailable_returned_hidden_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeEncoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, num_hidden_layers=12)
+
+        def forward(self, waveform: torch.Tensor, *, output_hidden_states: bool = False):
+            return SimpleNamespace(hidden_states=tuple(torch.zeros(waveform.shape[0], 2, 4) for _ in range(3)))
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.Wav2Vec2Model = SimpleNamespace(from_pretrained=lambda _: FakeEncoder())
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    extractor = FrozenWav2Vec2FeatureExtractor("fake/wav2vec2", layer_index=3)
+
+    with pytest.raises(ValueError, match="returned 3 hidden-state tensors"):
+        extractor(torch.randn(1, 2, 8))
 
 
 def test_model_with_wav2vec2_style_features_outputs_half_second_logits() -> None:
@@ -479,7 +542,7 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     assert default_config["loss"]["conditional_attribute_loss"] is True
     assert default_config["augmentation"]["enabled"] is True
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
-    assert wav2vec2_config["model"]["wav2vec2_layer_indices"] == [3, 6, 9, 12]
+    assert wav2vec2_config["model"]["wav2vec2_layer_index"] == 3
     assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
     assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True

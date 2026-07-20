@@ -62,11 +62,20 @@ def build_val_loader(config: dict[str, Any], records, *, batch_size: int | None)
 
 
 def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.device) -> CrowdReactionModel:
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    state_dict = checkpoint.get("model_state_dict", checkpoint)
+    checkpoint_model_config = checkpoint.get("config", {}).get("model", {})
+    if "wav2vec2_layer_indices" in checkpoint_model_config or any("scalar_mix" in key for key in state_dict):
+        raise RuntimeError(
+            "This checkpoint uses the obsolete wav2vec2 scalar layer fusion and is "
+            "incompatible with single-layer ablation models."
+        )
+    layer_index = int(checkpoint_model_config.get("wav2vec2_layer_index", config["model"].get("wav2vec2_layer_index", 3)))
     model = CrowdReactionModel(
         encoder_type=config["model"].get("encoder_type", "beats"),
         beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
         wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
-        wav2vec2_layer_indices=config["model"].get("wav2vec2_layer_indices", [3, 6, 9, 12]),
+        wav2vec2_layer_index=layer_index,
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),
@@ -74,8 +83,6 @@ def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.devic
         instance_sec=float(config["data"]["instance_sec"]),
         tasks_config=config.get("tasks"),
     ).to(device)
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
     model.load_state_dict(state_dict)
     model.eval()
     return model

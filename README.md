@@ -36,6 +36,18 @@ wav2vec2 uses Hugging Face Transformers:
 model:
   encoder_type: wav2vec2
   wav2vec2_model_name: facebook/wav2vec2-base
+  wav2vec2_layer_index: 3
+```
+
+`wav2vec2_layer_index` selects one transformer layer directly (1–12 for
+`facebook/wav2vec2-base`). For ablation runs it can be overridden without
+editing the config:
+
+```bash
+python scripts/train.py \
+  --config configs/wav2vec2.yaml \
+  --output-dir outputs/w2v_layer3 \
+  --wav2vec2-layer 3
 ```
 
 The wav2vec2 weights are downloaded automatically by `transformers` and cached in the Hugging Face cache. If your machine cannot write to the default cache, set a writable cache location before running:
