@@ -196,6 +196,8 @@ def test_train_wandb_payload_logs_only_precision_and_f1_validation_metrics() -> 
     assert payload["strong.disapproval.segment_macro_f1"] == 0.45
     assert payload["strong.disapproval.event_precision"] == 0.35
     assert payload["strong.disapproval.event_f1"] == 0.25
+    assert payload["strong.polarity.segment_macro_f1"] == pytest.approx(0.425)
+    assert payload["strong.polarity.event_f1"] == pytest.approx(0.225)
     assert not any(
         key.startswith("weak.") or "average_precision" in key or "auroc" in key or "recall" in key
         for key in payload
@@ -213,6 +215,18 @@ def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> N
 
     assert train_module.validation_score(metrics, "segment_macro_f1") == 0.8
     assert train_module.validation_score(metrics, "event_f1") == 0.6
+
+
+def test_train_polarity_validation_score_macro_averages_approval_and_disapproval() -> None:
+    metrics = {
+        "strong": {
+            "approval": {"segment_macro_f1": 0.8, "event_f1": 0.6},
+            "disapproval": {"segment_macro_f1": 0.4, "event_f1": 0.2},
+        }
+    }
+
+    assert train_module.polarity_validation_score(metrics, "segment_macro_f1") == pytest.approx(0.6)
+    assert train_module.polarity_validation_score(metrics, "event_f1") == pytest.approx(0.4)
 
 
 def test_results_thresholds_use_inference_threshold_policy() -> None:
@@ -541,12 +555,14 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     assert default_config["loss"]["unclear_label_weight"] == 0.75
     assert default_config["loss"]["conditional_attribute_loss"] is True
     assert default_config["augmentation"]["enabled"] is True
+    assert default_config["trainer"]["epochs"] == 15
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
     assert wav2vec2_config["model"]["wav2vec2_layer_index"] == 3
     assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
     assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True
     assert wav2vec2_config["augmentation"]["enabled"] is True
+    assert wav2vec2_config["trainer"]["epochs"] == 15
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:

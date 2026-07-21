@@ -265,6 +265,20 @@ def validation_score(metrics: dict[str, Any], metric_name: str) -> float:
     return float(metrics["weak"]["event"]["macro_f1"])
 
 
+def polarity_validation_score(metrics: dict[str, Any], metric_name: str) -> float:
+    strong = metrics.get("strong")
+    if strong is None:
+        raise ValueError("Strong validation metrics are required for polarity checkpoint selection")
+    scores = []
+    for task_name in ("approval", "disapproval"):
+        task_metrics = strong.get(task_name)
+        score = None if task_metrics is None else _finite_float(task_metrics.get(metric_name))
+        if score is None:
+            raise ValueError(f"Missing strong {task_name}.{metric_name} for polarity checkpoint selection")
+        scores.append(score)
+    return float(sum(scores) / len(scores))
+
+
 def _add_strong_task_payload(
     payload: dict[str, float | int | None],
     metrics: dict[str, Any],
@@ -300,6 +314,9 @@ def wandb_validation_payload(metrics: dict[str, Any]) -> dict[str, float | int |
             task_metrics = strong.get(task_name)
             if task_metrics is not None:
                 _add_strong_task_payload(payload, task_metrics, prefix=f"strong.{task_name}", use_main_names=False)
+        if strong.get("approval") is not None and strong.get("disapproval") is not None:
+            payload["strong.polarity.segment_macro_f1"] = polarity_validation_score(metrics, "segment_macro_f1")
+            payload["strong.polarity.event_f1"] = polarity_validation_score(metrics, "event_f1")
     return {key: value for key, value in payload.items() if value is not None}
 
 
@@ -383,8 +400,9 @@ def main() -> None:
 
     task_class_weights = _task_class_weights(config.get("loss", {}), device)
 
-    best_segment_f1 = float("-inf")
-    best_event_f1 = float("-inf")
+    best_polarity_segment_f1 = float("-inf")
+    best_polarity_event_f1 = float("-inf")
+    best_relevant_event_f1 = float("-inf")
     history = []
 
     show_progress = not bool(args.no_progress)
@@ -451,22 +469,33 @@ def main() -> None:
             config=config,
         )
 
-        segment_f1_score = validation_score(metrics, "segment_macro_f1")
-        event_f1_score = validation_score(metrics, "event_f1")
-        if segment_f1_score >= best_segment_f1:
-            best_segment_f1 = segment_f1_score
+        polarity_segment_f1 = polarity_validation_score(metrics, "segment_macro_f1")
+        polarity_event_f1 = polarity_validation_score(metrics, "event_f1")
+        relevant_event_f1 = validation_score(metrics, "event_f1")
+        if polarity_segment_f1 >= best_polarity_segment_f1:
+            best_polarity_segment_f1 = polarity_segment_f1
             save_checkpoint(
-                output_dir / "best_segment_f1.pt",
+                output_dir / "best_polarity_segment_f1.pt",
                 model=model,
                 optimizer=optimizer,
                 epoch=epoch,
                 metrics=metrics,
                 config=config,
             )
-        if event_f1_score >= best_event_f1:
-            best_event_f1 = event_f1_score
+        if polarity_event_f1 >= best_polarity_event_f1:
+            best_polarity_event_f1 = polarity_event_f1
             save_checkpoint(
-                output_dir / "best_event_f1.pt",
+                output_dir / "best_polarity_event_f1.pt",
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                metrics=metrics,
+                config=config,
+            )
+        if relevant_event_f1 >= best_relevant_event_f1:
+            best_relevant_event_f1 = relevant_event_f1
+            save_checkpoint(
+                output_dir / "best_relevant_event_f1.pt",
                 model=model,
                 optimizer=optimizer,
                 epoch=epoch,
@@ -485,8 +514,9 @@ def main() -> None:
                 [
                     f"epoch {epoch}/{total_epochs}",
                     f"train_loss={metrics['train_loss']:.4f}",
-                    f"segment_f1={segment_f1_score:.4f}",
-                    f"event_f1={event_f1_score:.4f}",
+                    f"polarity_segment_f1={polarity_segment_f1:.4f}",
+                    f"polarity_event_f1={polarity_event_f1:.4f}",
+                    f"relevant_event_f1={relevant_event_f1:.4f}",
                 ]
             )
         )
@@ -497,9 +527,15 @@ def main() -> None:
         json.dump(history, handle, indent=2)
 
     if wandb_run is not None:
-        wandb_run.summary["best_segment_f1"] = best_segment_f1
-        wandb_run.summary["best_event_f1"] = best_event_f1
-        for checkpoint_name in ("last.pt", "best_segment_f1.pt", "best_event_f1.pt"):
+        wandb_run.summary["best_polarity_segment_f1"] = best_polarity_segment_f1
+        wandb_run.summary["best_polarity_event_f1"] = best_polarity_event_f1
+        wandb_run.summary["best_relevant_event_f1"] = best_relevant_event_f1
+        for checkpoint_name in (
+            "last.pt",
+            "best_polarity_segment_f1.pt",
+            "best_polarity_event_f1.pt",
+            "best_relevant_event_f1.pt",
+        ):
             checkpoint_path = output_dir / checkpoint_name
             if checkpoint_path.exists():
                 wandb_run.save(str(checkpoint_path), policy="now")

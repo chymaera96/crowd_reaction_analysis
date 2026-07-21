@@ -62,7 +62,7 @@ loss:
   conditional_attribute_loss: true
 
 trainer:
-  epochs: 25
+  epochs: 15
 
 train:
   batch_size: 4
