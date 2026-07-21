@@ -426,6 +426,42 @@ def test_strong_eval_merges_overlapping_chunks() -> None:
     assert metrics["event_f1"] > 0.9
 
 
+def test_strong_eval_returns_zero_instead_of_nan_when_there_are_no_detections() -> None:
+    pytest.importorskip("sed_eval")
+    predictions = [
+        SpeechChunkPrediction(
+            speech_id="speech-1",
+            chunk_start_sec=0.0,
+            chunk_end_sec=4.0,
+            instance_probs=np.full((4, 1), 0.1, dtype=np.float32),
+        )
+    ]
+    metrics = evaluate_strong(
+        predictions,
+        [StrongEvent(speech_id="speech-1", event_class=0, onset_sec=1.0, offset_sec=3.0)],
+        num_classes=1,
+        instance_sec=1.0,
+        speech_durations={"speech-1": 4.0},
+        threshold=0.5,
+    )
+
+    assert metrics["segment_macro_precision"] == 0.0
+    assert metrics["segment_macro_f1"] == 0.0
+    assert metrics["event_precision"] == 0.0
+    assert metrics["event_f1"] == 0.0
+
+
+def test_polarity_validation_score_treats_nan_as_zero() -> None:
+    metrics = {
+        "strong": {
+            "approval": {"event_f1": float("nan")},
+            "disapproval": {"event_f1": 0.4},
+        }
+    }
+
+    assert train_module.polarity_validation_score(metrics, "event_f1") == pytest.approx(0.2)
+
+
 def test_synthetic_one_step_training_smoke() -> None:
     model = CrowdReactionModel(feature_extractor=DummyFeatureExtractor(output_dim=8), chunk_sec=20.0)
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)

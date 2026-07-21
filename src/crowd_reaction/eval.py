@@ -23,6 +23,16 @@ def _safe_divide(numerator: float, denominator: float) -> float:
     return float(numerator) / float(denominator)
 
 
+def _finite_metric_or_zero(value: Any) -> float:
+    score = float(value)
+    return score if np.isfinite(score) else 0.0
+
+
+def _mean_finite_or_zero(values: list[float]) -> float:
+    finite_values = [float(value) for value in values if np.isfinite(value)]
+    return float(np.mean(finite_values)) if finite_values else 0.0
+
+
 def binary_f1_score(targets: np.ndarray, probs: np.ndarray, threshold: float = 0.5) -> float:
     predictions = probs >= threshold
     tp = float(np.logical_and(predictions, targets == 1).sum())
@@ -310,29 +320,29 @@ def evaluate_strong(
         per_class_segment.append(
             {
                 "class_index": class_index,
-                "precision": float(segment_class["precision"]),
-                "recall": float(segment_class["recall"]),
-                "f1": float(segment_class["f_measure"]),
+                "precision": _finite_metric_or_zero(segment_class["precision"]),
+                "recall": _finite_metric_or_zero(segment_class["recall"]),
+                "f1": _finite_metric_or_zero(segment_class["f_measure"]),
             }
         )
         per_class_event.append(
             {
                 "class_index": class_index,
-                "precision": float(event_class["precision"]),
-                "recall": float(event_class["recall"]),
-                "f1": float(event_class["f_measure"]),
+                "precision": _finite_metric_or_zero(event_class["precision"]),
+                "recall": _finite_metric_or_zero(event_class["recall"]),
+                "f1": _finite_metric_or_zero(event_class["f_measure"]),
             }
         )
 
     return {
         "segment_per_class": per_class_segment,
-        "segment_macro_precision": float(np.nanmean([item["precision"] for item in per_class_segment])) if per_class_segment else 0.0,
-        "segment_macro_recall": float(np.nanmean([item["recall"] for item in per_class_segment])) if per_class_segment else 0.0,
-        "segment_macro_f1": float(np.nanmean([item["f1"] for item in per_class_segment])) if per_class_segment else 0.0,
+        "segment_macro_precision": _mean_finite_or_zero([item["precision"] for item in per_class_segment]),
+        "segment_macro_recall": _mean_finite_or_zero([item["recall"] for item in per_class_segment]),
+        "segment_macro_f1": _mean_finite_or_zero([item["f1"] for item in per_class_segment]),
         "event_per_class": per_class_event,
-        "event_precision": float(event_overall["f_measure"]["precision"]),
-        "event_recall": float(event_overall["f_measure"]["recall"]),
-        "event_f1": float(event_overall["f_measure"]["f_measure"]),
+        "event_precision": _finite_metric_or_zero(event_overall["f_measure"]["precision"]),
+        "event_recall": _finite_metric_or_zero(event_overall["f_measure"]["recall"]),
+        "event_f1": _finite_metric_or_zero(event_overall["f_measure"]["f_measure"]),
     }
 
 

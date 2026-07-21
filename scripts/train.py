@@ -272,9 +272,11 @@ def polarity_validation_score(metrics: dict[str, Any], metric_name: str) -> floa
     scores = []
     for task_name in ("approval", "disapproval"):
         task_metrics = strong.get(task_name)
-        score = None if task_metrics is None else _finite_float(task_metrics.get(metric_name))
-        if score is None:
+        if task_metrics is None or metric_name not in task_metrics:
             raise ValueError(f"Missing strong {task_name}.{metric_name} for polarity checkpoint selection")
+        score = _finite_float(task_metrics[metric_name])
+        if score is None:
+            score = 0.0
         scores.append(score)
     return float(sum(scores) / len(scores))
 
