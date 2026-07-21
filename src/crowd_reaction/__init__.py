@@ -7,6 +7,7 @@ from .model import (
     DummyFeatureExtractor,
     FrozenWav2Vec2FeatureExtractor,
     MultiTaskOutputs,
+    Wav2Vec2LayerScalarMix,
     mmm_bag_loss,
     mmm_bag_loss_from_probs,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "DummyFeatureExtractor",
     "FrozenWav2Vec2FeatureExtractor",
     "MultiTaskOutputs",
+    "Wav2Vec2LayerScalarMix",
     "StrongEvent",
     "WeakBagTargets",
     "WeakChunkDataset",

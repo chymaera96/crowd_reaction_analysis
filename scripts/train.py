@@ -39,13 +39,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and metrics")
     parser.add_argument("--run-id", default=None, help="Run identifier used for W&B and checkpoint subdirectory naming")
-    parser.add_argument(
+    wav2vec2_layers = parser.add_mutually_exclusive_group()
+    wav2vec2_layers.add_argument(
         "--wav2vec2-layer",
         type=int,
         choices=range(1, 13),
         default=None,
         metavar="N",
         help="Override the wav2vec2 transformer layer (1-12)",
+    )
+    wav2vec2_layers.add_argument(
+        "--wav2vec2-layers",
+        type=int,
+        choices=range(1, 13),
+        nargs="+",
+        default=None,
+        metavar="N",
+        help="Learn a scalar fusion over these wav2vec2 transformer layers (1-12)",
     )
     parser.add_argument(
         "--wandb-mode",
@@ -67,9 +77,33 @@ def load_config(config_path: str) -> dict[str, Any]:
 
 
 def apply_cli_overrides(config: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
+    model_config = config.setdefault("model", {})
     if args.wav2vec2_layer is not None:
-        config.setdefault("model", {})["wav2vec2_layer_index"] = int(args.wav2vec2_layer)
+        model_config["wav2vec2_layer_index"] = int(args.wav2vec2_layer)
+        model_config.pop("wav2vec2_layer_indices", None)
+    elif args.wav2vec2_layers is not None:
+        if len(args.wav2vec2_layers) < 2:
+            raise ValueError("--wav2vec2-layers requires at least two layer numbers")
+        if len(set(args.wav2vec2_layers)) != len(args.wav2vec2_layers):
+            raise ValueError("--wav2vec2-layers must not contain duplicates")
+        model_config["wav2vec2_layer_indices"] = [int(index) for index in args.wav2vec2_layers]
+        model_config.pop("wav2vec2_layer_index", None)
     return config
+
+
+def wav2vec2_fusion_payload(model: CrowdReactionModel) -> dict[str, float]:
+    extractor = model.feature_extractor
+    scalar_mix = getattr(extractor, "scalar_mix", None)
+    layer_indices = getattr(extractor, "layer_indices", None)
+    if scalar_mix is None or layer_indices is None:
+        return {}
+    weights = torch.softmax(scalar_mix.scalar_weights.detach(), dim=0).cpu().tolist()
+    payload = {
+        f"wav2vec2.fusion_weight.layer_{layer_index}": float(weight)
+        for layer_index, weight in zip(layer_indices, weights)
+    }
+    payload["wav2vec2.fusion_gamma"] = float(scalar_mix.gamma.detach().cpu().item())
+    return payload
 
 
 def _import_wandb():
@@ -381,11 +415,13 @@ def main() -> None:
     )
     val_loader = build_dataloader(config["data"], config["val"], split_datasets.val_records, shuffle=False)
 
+    layer_indices = config["model"].get("wav2vec2_layer_indices")
     model = CrowdReactionModel(
         encoder_type=config["model"].get("encoder_type", "beats"),
         beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
         wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
         wav2vec2_layer_index=int(config["model"].get("wav2vec2_layer_index", 3)),
+        wav2vec2_layer_indices=layer_indices,
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),
@@ -523,7 +559,7 @@ def main() -> None:
             )
         )
         if wandb_run is not None:
-            wandb_run.log(wandb_validation_payload(metrics), step=epoch)
+            wandb_run.log(wandb_validation_payload(metrics) | wav2vec2_fusion_payload(model), step=epoch)
 
     with open(output_dir / "history.json", "w", encoding="utf-8") as handle:
         json.dump(history, handle, indent=2)

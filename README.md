@@ -50,6 +50,18 @@ python scripts/train.py \
   --wav2vec2-layer 3
 ```
 
+To learn a scalar fusion over several frozen transformer layers instead:
+
+```bash
+python scripts/train.py \
+  --config configs/wav2vec2.yaml \
+  --output-dir outputs/w2v_fusion_3_6_9_12 \
+  --wav2vec2-layers 3 6 9 12
+```
+
+The fusion softmax weights and global scale are optimized with the classifier
+heads and logged to W&B on every epoch.
+
 The wav2vec2 weights are downloaded automatically by `transformers` and cached in the Hugging Face cache. If your machine cannot write to the default cache, set a writable cache location before running:
 
 ```bash

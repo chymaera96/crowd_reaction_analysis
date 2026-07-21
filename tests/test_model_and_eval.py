@@ -19,6 +19,7 @@ from crowd_reaction.model import (
     CrowdReactionModel,
     DummyFeatureExtractor,
     FrozenWav2Vec2FeatureExtractor,
+    Wav2Vec2LayerScalarMix,
     mmm_bag_loss,
     mmm_bag_loss_from_probs,
 )
@@ -304,12 +305,23 @@ def test_results_parse_args_defaults_output_to_none(monkeypatch: pytest.MonkeyPa
 
 
 def test_train_wav2vec2_layer_cli_override_is_applied_to_effective_config() -> None:
-    config = {"model": {"wav2vec2_layer_index": 8}}
-    args = SimpleNamespace(wav2vec2_layer=3)
+    config = {"model": {"wav2vec2_layer_indices": [3, 6]}}
+    args = SimpleNamespace(wav2vec2_layer=3, wav2vec2_layers=None)
 
     effective = train_module.apply_cli_overrides(config, args)
 
     assert effective["model"]["wav2vec2_layer_index"] == 3
+    assert "wav2vec2_layer_indices" not in effective["model"]
+
+
+def test_train_wav2vec2_layers_cli_enables_fusion() -> None:
+    config = {"model": {"wav2vec2_layer_index": 3}}
+    args = SimpleNamespace(wav2vec2_layer=None, wav2vec2_layers=[3, 6, 9, 12])
+
+    effective = train_module.apply_cli_overrides(config, args)
+
+    assert effective["model"]["wav2vec2_layer_indices"] == [3, 6, 9, 12]
+    assert "wav2vec2_layer_index" not in effective["model"]
 
 
 @pytest.mark.parametrize("module", [infer_module, results_module])
@@ -349,17 +361,38 @@ def test_evaluation_loads_wav2vec2_layer_from_checkpoint_config(
 
 
 @pytest.mark.parametrize("module", [infer_module, results_module])
-def test_evaluation_rejects_scalar_fusion_checkpoint(
+def test_evaluation_loads_scalar_fusion_layers_from_checkpoint(
     monkeypatch: pytest.MonkeyPatch, module
 ) -> None:
+    constructed: dict[str, object] = {}
+
+    class FakeModel:
+        def __init__(self, **kwargs) -> None:
+            constructed.update(kwargs)
+
+        def to(self, device):
+            return self
+
+        def load_state_dict(self, state_dict) -> None:
+            pass
+
+        def eval(self) -> None:
+            pass
+
     checkpoint = {
         "model_state_dict": {"feature_extractor.scalar_mix.gamma": torch.tensor(1.0)},
         "config": {"model": {"wav2vec2_layer_indices": [3, 6, 9, 12]}},
     }
+    monkeypatch.setattr(module, "CrowdReactionModel", FakeModel)
     monkeypatch.setattr(module.torch, "load", lambda *args, **kwargs: checkpoint)
+    config = {
+        "model": {"encoder_type": "wav2vec2"},
+        "data": {"sample_rate": 16000, "chunk_sec": 20.0, "instance_sec": 0.5},
+    }
 
-    with pytest.raises(RuntimeError, match="obsolete wav2vec2 scalar layer fusion"):
-        module.load_model({"model": {}, "data": {}}, "checkpoint.pt", torch.device("cpu"))
+    module.load_model(config, "checkpoint.pt", torch.device("cpu"))
+
+    assert constructed["wav2vec2_layer_indices"] == [3, 6, 9, 12]
 
 
 def test_parse_strong_label_file_by_task_splits_event_and_attributes(tmp_path: Path) -> None:
@@ -528,6 +561,55 @@ def test_frozen_wav2vec2_extractor_selects_one_configured_hidden_layer(
     assert extractor.layer_index == layer_index
     assert all(not parameter.requires_grad for parameter in extractor.encoder.parameters())
     assert not any("scalar_mix" in name for name, _ in extractor.named_parameters())
+
+
+def test_wav2vec2_scalar_fusion_is_trainable_and_logged(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeEncoder(torch.nn.Module):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config = SimpleNamespace(hidden_size=4, num_hidden_layers=12)
+
+        def forward(self, waveform: torch.Tensor, *, output_hidden_states: bool = False):
+            return SimpleNamespace(
+                hidden_states=tuple(
+                    torch.full((waveform.shape[0], 7, 4), float(index), device=waveform.device)
+                    for index in range(13)
+                )
+            )
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.Wav2Vec2Model = SimpleNamespace(from_pretrained=lambda _: FakeEncoder())
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    extractor = FrozenWav2Vec2FeatureExtractor("fake/wav2vec2", layer_indices=[3, 6, 9, 12])
+    model = CrowdReactionModel(feature_extractor=extractor, chunk_sec=20.0, instance_sec=0.5)
+    optimizer = torch.optim.AdamW([parameter for parameter in model.parameters() if parameter.requires_grad], lr=1e-2)
+
+    initial_weights = extractor.scalar_mix.scalar_weights.detach().clone()
+    loss = model(instances=torch.randn(2, 40, 20)).instance_logits["event"].square().mean()
+    loss.backward()
+    optimizer.step()
+    payload = train_module.wav2vec2_fusion_payload(model)
+
+    assert not torch.allclose(extractor.scalar_mix.scalar_weights.detach(), initial_weights)
+    assert set(payload) == {
+        "wav2vec2.fusion_weight.layer_3",
+        "wav2vec2.fusion_weight.layer_6",
+        "wav2vec2.fusion_weight.layer_9",
+        "wav2vec2.fusion_weight.layer_12",
+        "wav2vec2.fusion_gamma",
+    }
+    assert sum(value for key, value in payload.items() if "fusion_weight" in key) == pytest.approx(1.0)
+
+
+def test_wav2vec2_scalar_mix_parameters_receive_gradients() -> None:
+    scalar_mix = Wav2Vec2LayerScalarMix(num_layers=4)
+    layers = [torch.full((1, 2, 3), value) for value in (0.0, 1.0, 3.0, 6.0)]
+
+    scalar_mix(layers).square().mean().backward()
+
+    assert scalar_mix.scalar_weights.grad is not None
+    assert float(scalar_mix.scalar_weights.grad.abs().sum()) > 0.0
+    assert scalar_mix.gamma.grad is not None
 
 
 @pytest.mark.parametrize("layer_index", [0, 13])
