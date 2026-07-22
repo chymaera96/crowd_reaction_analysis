@@ -97,13 +97,12 @@ def wav2vec2_fusion_payload(model: CrowdReactionModel) -> dict[str, float]:
     layer_indices = getattr(extractor, "layer_indices", None)
     if scalar_mix is None or layer_indices is None:
         return {}
-    weights = torch.softmax(scalar_mix.scalar_weights.detach(), dim=0).cpu().tolist()
-    payload = {
-        f"wav2vec2.fusion_weight.layer_{layer_index}": float(weight)
-        for layer_index, weight in zip(layer_indices, weights)
+    weights = torch.softmax(scalar_mix.scalar_weights.detach(), dim=0).cpu()
+    normalized_entropy = -(weights * weights.clamp_min(1e-12).log()).sum() / math.log(len(weights))
+    return {
+        "wav2vec2.fusion_max_weight": float(weights.max().item()),
+        "wav2vec2.fusion_normalized_entropy": float(normalized_entropy.item()),
     }
-    payload["wav2vec2.fusion_gamma"] = float(scalar_mix.gamma.detach().cpu().item())
-    return payload
 
 
 def _import_wandb():
@@ -323,41 +322,42 @@ def polarity_validation_score(metrics: dict[str, Any], metric_name: str) -> floa
     return float(sum(scores) / len(scores))
 
 
-def _add_strong_task_payload(
-    payload: dict[str, float | int | None],
-    metrics: dict[str, Any],
-    *,
-    prefix: str,
-    use_main_names: bool,
-) -> None:
-    if use_main_names:
-        payload["strong.segment_macro_precision"] = _finite_float(metrics.get("segment_macro_precision"))
-        payload["strong.segment_macro_f1"] = _finite_float(metrics.get("segment_macro_f1"))
-        payload["strong.event_precision"] = _finite_float(metrics.get("event_precision"))
-        payload["strong.event_f1"] = _finite_float(metrics.get("event_f1"))
-        return
-    payload[f"{prefix}.segment_macro_precision"] = _finite_float(metrics.get("segment_macro_precision"))
-    payload[f"{prefix}.segment_macro_f1"] = _finite_float(metrics.get("segment_macro_f1"))
-    payload[f"{prefix}.event_precision"] = _finite_float(metrics.get("event_precision"))
-    payload[f"{prefix}.event_f1"] = _finite_float(metrics.get("event_f1"))
+def weak_polarity_auprc_score(metrics: dict[str, Any]) -> float:
+    weak = metrics.get("weak")
+    if weak is None:
+        raise ValueError("Weak validation metrics are required for checkpoint selection")
+    scores = []
+    for task_name in ("approval", "disapproval"):
+        task_metrics = weak.get(task_name)
+        if task_metrics is None or "macro_average_precision" not in task_metrics:
+            raise ValueError(f"Missing weak {task_name}.macro_average_precision for checkpoint selection")
+        score = _finite_float(task_metrics["macro_average_precision"])
+        scores.append(0.0 if score is None else score)
+    return float(sum(scores) / len(scores))
 
 
 def wandb_validation_payload(metrics: dict[str, Any]) -> dict[str, float | int | None]:
     payload: dict[str, float | int | None] = {
         "epoch": int(metrics["epoch"]),
         "train.loss": float(metrics["train_loss"]),
-        "train.event_loss": float(metrics["train_event_loss"]),
-        "train.approval_loss": metrics.get("train_approval_loss"),
-        "train.disapproval_loss": metrics.get("train_disapproval_loss"),
     }
+
+    weak = metrics.get("weak")
+    if weak is not None:
+        for task_name in ("approval", "disapproval"):
+            task_metrics = weak.get(task_name)
+            if task_metrics is not None:
+                payload[f"weak.{task_name}.auprc"] = _finite_float(task_metrics.get("macro_average_precision"))
+        if weak.get("approval") is not None and weak.get("disapproval") is not None:
+            payload["weak.polarity.auprc"] = weak_polarity_auprc_score(metrics)
 
     strong = metrics.get("strong")
     if strong is not None:
-        _add_strong_task_payload(payload, strong, prefix="strong.relevant_event", use_main_names=True)
         for task_name in ("approval", "disapproval"):
             task_metrics = strong.get(task_name)
             if task_metrics is not None:
-                _add_strong_task_payload(payload, task_metrics, prefix=f"strong.{task_name}", use_main_names=False)
+                payload[f"strong.{task_name}.segment_f1"] = _finite_float(task_metrics.get("segment_macro_f1"))
+                payload[f"strong.{task_name}.event_f1"] = _finite_float(task_metrics.get("event_f1"))
         if strong.get("approval") is not None and strong.get("disapproval") is not None:
             payload["strong.polarity.segment_macro_f1"] = polarity_validation_score(metrics, "segment_macro_f1")
             payload["strong.polarity.event_f1"] = polarity_validation_score(metrics, "event_f1")
@@ -446,6 +446,7 @@ def main() -> None:
 
     task_class_weights = _task_class_weights(config.get("loss", {}), device)
 
+    best_weak_polarity_auprc = float("-inf")
     best_polarity_segment_f1 = float("-inf")
     best_polarity_event_f1 = float("-inf")
     best_relevant_event_f1 = float("-inf")
@@ -515,6 +516,17 @@ def main() -> None:
             config=config,
         )
 
+        weak_polarity_auprc = weak_polarity_auprc_score(metrics)
+        if weak_polarity_auprc >= best_weak_polarity_auprc:
+            best_weak_polarity_auprc = weak_polarity_auprc
+            save_checkpoint(
+                output_dir / "best_weak_polarity_auprc.pt",
+                model=model,
+                optimizer=optimizer,
+                epoch=epoch,
+                metrics=metrics,
+                config=config,
+            )
         polarity_segment_f1 = polarity_validation_score(metrics, "segment_macro_f1")
         polarity_event_f1 = polarity_validation_score(metrics, "event_f1")
         relevant_event_f1 = validation_score(metrics, "event_f1")
@@ -548,18 +560,12 @@ def main() -> None:
                 metrics=metrics,
                 config=config,
             )
-        strong = metrics.get("strong")
-        strong_event = None if strong is None else strong.get("event", strong)
-        if strong_event is not None and "segment_macro_precision" not in strong_event:
-            strong_event = None
-        strong_approval = None if strong is None else strong.get("approval")
-        strong_disapproval = None if strong is None else strong.get("disapproval")
-
         print(
             " | ".join(
                 [
                     f"epoch {epoch}/{total_epochs}",
                     f"train_loss={metrics['train_loss']:.4f}",
+                    f"weak_polarity_auprc={weak_polarity_auprc:.4f}",
                     f"polarity_segment_f1={polarity_segment_f1:.4f}",
                     f"polarity_event_f1={polarity_event_f1:.4f}",
                     f"relevant_event_f1={relevant_event_f1:.4f}",
@@ -573,11 +579,13 @@ def main() -> None:
         json.dump(history, handle, indent=2)
 
     if wandb_run is not None:
+        wandb_run.summary["best_weak_polarity_auprc"] = best_weak_polarity_auprc
         wandb_run.summary["best_polarity_segment_f1"] = best_polarity_segment_f1
         wandb_run.summary["best_polarity_event_f1"] = best_polarity_event_f1
         wandb_run.summary["best_relevant_event_f1"] = best_relevant_event_f1
         for checkpoint_name in (
             "last.pt",
+            "best_weak_polarity_auprc.pt",
             "best_polarity_segment_f1.pt",
             "best_polarity_event_f1.pt",
             "best_relevant_event_f1.pt",

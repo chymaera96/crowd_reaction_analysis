@@ -77,7 +77,7 @@ Run one audio file through a trained checkpoint:
 ```bash
 python scripts/api.py \
   --config configs/wav2vec2.yaml \
-  --checkpoint outputs/w2v_layer3/best_polarity_event_f1.pt \
+  --checkpoint outputs/w2v_layer3/best_weak_polarity_auprc.pt \
   --audio /path/to/input.wav \
   --output-dir api_outputs/example \
   --mode polarity \
@@ -122,7 +122,7 @@ from scripts.api import (
 result = run_audio_inference(
     audio_path="/path/to/input.wav",
     config_path="configs/wav2vec2.yaml",
-    checkpoint_path="outputs/w2v_layer3/best_polarity_event_f1.pt",
+    checkpoint_path="outputs/w2v_layer3/best_weak_polarity_auprc.pt",
     mode="polarity",
     batch_size=1,
 )

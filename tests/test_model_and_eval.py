@@ -169,7 +169,7 @@ def test_weak_eval_respects_masks() -> None:
     assert metrics["approval"]["num_valid"] == 1
 
 
-def test_train_wandb_payload_logs_only_precision_and_f1_validation_metrics() -> None:
+def test_train_wandb_payload_logs_weak_auprc_and_strong_validation_metrics() -> None:
     metrics = {
         "epoch": 3,
         "train_loss": 1.0,
@@ -209,24 +209,40 @@ def test_train_wandb_payload_logs_only_precision_and_f1_validation_metrics() -> 
 
     payload = train_module.wandb_validation_payload(metrics)
 
-    assert payload["strong.segment_macro_precision"] == 0.9
-    assert payload["strong.segment_macro_f1"] == 0.8
-    assert payload["strong.event_precision"] == 0.7
-    assert payload["strong.event_f1"] == 0.6
-    assert payload["strong.approval.segment_macro_precision"] == 0.5
-    assert payload["strong.approval.segment_macro_f1"] == 0.4
-    assert payload["strong.approval.event_precision"] == 0.3
+    assert payload["weak.approval.auprc"] == 0.7
+    assert payload["weak.disapproval.auprc"] == 0.5
+    assert payload["weak.polarity.auprc"] == pytest.approx(0.6)
+    assert payload["strong.approval.segment_f1"] == 0.4
     assert payload["strong.approval.event_f1"] == 0.2
-    assert payload["strong.disapproval.segment_macro_precision"] == 0.55
-    assert payload["strong.disapproval.segment_macro_f1"] == 0.45
-    assert payload["strong.disapproval.event_precision"] == 0.35
+    assert payload["strong.disapproval.segment_f1"] == 0.45
     assert payload["strong.disapproval.event_f1"] == 0.25
     assert payload["strong.polarity.segment_macro_f1"] == pytest.approx(0.425)
     assert payload["strong.polarity.event_f1"] == pytest.approx(0.225)
-    assert not any(
-        key.startswith("weak.") or "average_precision" in key or "auroc" in key or "recall" in key
-        for key in payload
-    )
+    assert not any("average_precision" in key or "auroc" in key or "recall" in key for key in payload)
+    assert set(payload) == {
+        "epoch",
+        "train.loss",
+        "weak.approval.auprc",
+        "weak.disapproval.auprc",
+        "weak.polarity.auprc",
+        "strong.approval.segment_f1",
+        "strong.approval.event_f1",
+        "strong.disapproval.segment_f1",
+        "strong.disapproval.event_f1",
+        "strong.polarity.segment_macro_f1",
+        "strong.polarity.event_f1",
+    }
+
+
+def test_weak_polarity_auprc_score_averages_approval_and_disapproval() -> None:
+    metrics = {
+        "weak": {
+            "approval": {"macro_average_precision": 0.8},
+            "disapproval": {"macro_average_precision": 0.4},
+        }
+    }
+
+    assert train_module.weak_polarity_auprc_score(metrics) == pytest.approx(0.6)
 
 
 def test_train_validation_scores_use_separate_strong_event_and_segment_f1() -> None:
@@ -616,13 +632,11 @@ def test_wav2vec2_scalar_fusion_is_trainable_and_logged(monkeypatch: pytest.Monk
 
     assert not torch.allclose(extractor.scalar_mix.scalar_weights.detach(), initial_weights)
     assert set(payload) == {
-        "wav2vec2.fusion_weight.layer_3",
-        "wav2vec2.fusion_weight.layer_6",
-        "wav2vec2.fusion_weight.layer_9",
-        "wav2vec2.fusion_weight.layer_12",
-        "wav2vec2.fusion_gamma",
+        "wav2vec2.fusion_max_weight",
+        "wav2vec2.fusion_normalized_entropy",
     }
-    assert sum(value for key, value in payload.items() if "fusion_weight" in key) == pytest.approx(1.0)
+    assert 0.25 <= payload["wav2vec2.fusion_max_weight"] <= 1.0
+    assert 0.0 <= payload["wav2vec2.fusion_normalized_entropy"] <= 1.0
 
 
 def test_wav2vec2_scalar_mix_parameters_receive_gradients() -> None:
