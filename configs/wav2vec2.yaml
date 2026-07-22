@@ -56,9 +56,9 @@ loss:
   event_class_weights: [1.0]
   approval_class_weights: [1.0]
   disapproval_class_weights: [1.0]
-  event_mean_target: 0.1
-  approval_mean_target: 0.1
-  disapproval_mean_target: 0.1
+  event_mean_target: 0.3
+  approval_mean_target: 0.3
+  disapproval_mean_target: 0.3
   lambda_approval: 0.5
   lambda_disapproval: 0.5
   unclear_label_weight: 0.75
