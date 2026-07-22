@@ -177,6 +177,12 @@ def compute_multitask_loss(
             continue
         target_tensor = batch_targets[spec["target_key"]]
         mask_tensor = batch_targets[spec["mask_key"]]
+        positive_mean_target = float(
+            loss_config.get(
+                f"{task_name}_mean_target",
+                loss_config.get("positive_mean_target", 0.5),
+            )
+        )
         if task_name != "event" and conditional_attribute_loss and event_probs is not None:
             task_probs = event_probs * torch.sigmoid(outputs.instance_logits[task_name])
             task_loss = mmm_bag_loss_from_probs(
@@ -184,6 +190,7 @@ def compute_multitask_loss(
                 target_tensor,
                 class_weights=task_class_weights.get(task_name),
                 bag_mask=mask_tensor,
+                positive_mean_target=positive_mean_target,
             )
         else:
             task_loss = mmm_bag_loss(
@@ -191,6 +198,7 @@ def compute_multitask_loss(
                 target_tensor,
                 class_weights=task_class_weights.get(task_name),
                 bag_mask=mask_tensor,
+                positive_mean_target=positive_mean_target,
             )
         if task_name == "event":
             weighted_loss = task_loss

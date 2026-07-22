@@ -89,6 +89,30 @@ def test_mmm_loss_from_probs_matches_logit_wrapper() -> None:
     )
 
 
+def test_mmm_loss_supports_configurable_positive_mean_target() -> None:
+    probs = torch.tensor([[[1e-4], [0.1], [0.2], [0.9999]]], dtype=torch.float32)
+    labels = torch.ones((1, 1), dtype=torch.float32)
+
+    loss = mmm_bag_loss_from_probs(probs, labels, positive_mean_target=0.1)
+    expected = (
+        torch.nn.functional.binary_cross_entropy(probs.amax(dim=1), labels)
+        + torch.nn.functional.binary_cross_entropy(probs.mean(dim=1), torch.full_like(labels, 0.1))
+        + torch.nn.functional.binary_cross_entropy(probs.amin(dim=1), torch.zeros_like(labels))
+    )
+
+    assert torch.isclose(loss, expected, atol=1e-6)
+
+
+@pytest.mark.parametrize("mean_target", [-0.1, 1.1])
+def test_mmm_loss_rejects_invalid_positive_mean_target(mean_target: float) -> None:
+    with pytest.raises(ValueError, match="positive_mean_target must be between 0 and 1"):
+        mmm_bag_loss_from_probs(
+            torch.full((1, 2, 1), 0.5),
+            torch.ones((1, 1)),
+            positive_mean_target=mean_target,
+        )
+
+
 def test_conditional_attribute_loss_uses_detached_event_gate() -> None:
     event_logits = torch.tensor([[[2.0], [-2.0]]], dtype=torch.float32, requires_grad=True)
     approval_logits = torch.tensor([[[1.0], [0.0]]], dtype=torch.float32, requires_grad=True)
@@ -679,6 +703,9 @@ def test_encoder_configs_keep_expected_training_recipes() -> None:
     assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
     assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True
+    assert wav2vec2_config["loss"]["event_mean_target"] == 0.1
+    assert wav2vec2_config["loss"]["approval_mean_target"] == 0.1
+    assert wav2vec2_config["loss"]["disapproval_mean_target"] == 0.1
     assert wav2vec2_config["augmentation"]["enabled"] is True
     assert wav2vec2_config["trainer"]["epochs"] == 15
 

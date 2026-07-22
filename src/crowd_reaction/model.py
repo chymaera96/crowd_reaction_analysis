@@ -281,9 +281,12 @@ class MMMTargets:
     min_target: float
 
 
-def _targets_for_label(label: float) -> MMMTargets:
+def _targets_for_label(label: float, *, positive_mean_target: float = 0.5) -> MMMTargets:
+    positive_mean_target = float(positive_mean_target)
+    if not 0.0 <= positive_mean_target <= 1.0:
+        raise ValueError(f"positive_mean_target must be between 0 and 1, got {positive_mean_target}")
     if float(label) >= 0.5:
-        return MMMTargets(max_target=1.0, mean_target=0.5, min_target=0.0)
+        return MMMTargets(max_target=1.0, mean_target=positive_mean_target, min_target=0.0)
     return MMMTargets(max_target=0.0, mean_target=0.0, min_target=0.0)
 
 
@@ -292,12 +295,14 @@ def mmm_bag_loss(
     bag_labels: torch.Tensor,
     class_weights: torch.Tensor | None = None,
     bag_mask: torch.Tensor | None = None,
+    positive_mean_target: float = 0.5,
 ) -> torch.Tensor:
     return mmm_bag_loss_from_probs(
         torch.sigmoid(instance_logits),
         bag_labels,
         class_weights=class_weights,
         bag_mask=bag_mask,
+        positive_mean_target=positive_mean_target,
     )
 
 
@@ -306,6 +311,7 @@ def mmm_bag_loss_from_probs(
     bag_labels: torch.Tensor,
     class_weights: torch.Tensor | None = None,
     bag_mask: torch.Tensor | None = None,
+    positive_mean_target: float = 0.5,
 ) -> torch.Tensor:
     if instance_probs.dim() != 3:
         raise ValueError(f"Expected instance_probs [B, T, C], got {tuple(instance_probs.shape)}")
@@ -321,7 +327,10 @@ def mmm_bag_loss_from_probs(
     mean_targets = torch.zeros_like(bag_labels)
     for batch_index in range(bag_labels.shape[0]):
         for class_index in range(bag_labels.shape[1]):
-            label_targets = _targets_for_label(float(bag_labels[batch_index, class_index].item()))
+            label_targets = _targets_for_label(
+                float(bag_labels[batch_index, class_index].item()),
+                positive_mean_target=positive_mean_target,
+            )
             targets[batch_index, class_index] = label_targets.max_target
             mean_targets[batch_index, class_index] = label_targets.mean_target
 
