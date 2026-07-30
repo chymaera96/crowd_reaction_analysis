@@ -120,4 +120,4 @@ You can edit `result.scores` or `result.predicted_regions` before plotting if yo
 
 ## Citation
 
-Citation details will be available soon.
+Hermida Carrillo, A. C., Bhattacharjee, A., & Benetos, E. (2026). To the sound of your applause: a signal processing approach to crowd-speaker communication in political speeches. UK and Ireland (UKIS) Workshop.
