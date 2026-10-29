@@ -31,7 +31,6 @@ Place the supplied classifier checkpoints in `weights/`:
 | BEATs | `configs/beats.yaml` | `weights/beats.pt` | 1 Hz |
 | wav2vec2 | `configs/wav2vec2.yaml` | `weights/wav2vec2.pt` | 2 Hz |
 | CNN–TCN, joint | `configs/cnn_tcn.yaml` | `weights/cnn_tcn.pt` | 25 Hz |
-| CNN–TCN, event only | `configs/cnn_tcn_event.yaml` | `weights/cnn_tcn_event.pt` | 25 Hz |
 
 The checkpoints include their encoder configuration and weights. Inference loads
 locally. The `weights/` directory is distributed separately from Git.
@@ -52,17 +51,6 @@ python scripts/api.py \
 For BEATs or wav2vec2, replace the configuration and weight filenames with the
 corresponding pair from the table. Audio is resampled and mixed to mono.
 Use `--device cuda` for GPU inference.
-
-For crowd presence/absence with the event-only model:
-
-```bash
-python scripts/api.py \
-  --config configs/cnn_tcn_event.yaml \
-  --checkpoint weights/cnn_tcn_event.pt \
-  --audio /path/to/audio.wav \
-  --output-dir annotations/events \
-  --mode event --batch-size 1 --device cpu
-```
 
 The API writes:
 
@@ -128,9 +116,10 @@ python scripts/infer.py \
   --output-dir annotations/validation --wandb-mode disabled
 ```
 
-This also exports predicted and ground-truth segment CSVs. The saved validation
-plots and overall metrics are in `outputs/<model>/`; the combined table is
-`outputs/validation_metrics.csv`. The CNN–TCN folder also includes the MLK plot.
+This generates plots and exports predicted and ground-truth segment CSVs. Saved
+overall validation metrics for BEATs, wav2vec2, and the joint CNN–TCN are in
+`outputs/<model>/metrics.json`; the combined table is
+`outputs/validation_metrics.csv`. Generated plots are excluded from Git.
 
 ## Tests
 
