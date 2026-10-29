@@ -117,9 +117,9 @@ python scripts/infer.py \
 ```
 
 This generates plots and exports predicted and ground-truth segment CSVs. Saved
-overall validation metrics for BEATs, wav2vec2, and the joint CNN–TCN are in
-`outputs/<model>/metrics.json`; the combined table is
-`outputs/validation_metrics.csv`. Generated plots are excluded from Git.
+plots and overall validation metrics for BEATs, wav2vec2, and the best joint
+CNN–TCN are in `outputs/<model>/`; the combined metric table is
+`outputs/validation_metrics.csv`. The CNN–TCN folder also includes the MLK plot.
 
 ## Tests
 
