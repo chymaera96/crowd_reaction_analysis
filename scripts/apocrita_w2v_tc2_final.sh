@@ -17,15 +17,23 @@ import os
 from pathlib import Path
 import torch
 import yaml
+from transformers import Wav2Vec2Model
 assert torch.cuda.is_available(), "GPU required"
 config = yaml.safe_load(Path('configs/wav2vec2_tc2_final.yaml').read_text())
 assert config['model']['wav2vec2_layer_index'] == 12
 assert 'wav2vec2_layer_indices' not in config['model']
+encoder, loading = Wav2Vec2Model.from_pretrained(
+    config['model']['wav2vec2_model_name'], output_loading_info=True,
+)
+assert not loading['missing_keys'], f"Missing pretrained weights: {loading['missing_keys']}"
+assert config['model']['wav2vec2_layer_index'] == encoder.config.num_hidden_layers
+del encoder
 for key, value in config['data'].items():
     if isinstance(value, str) and value.startswith('data/'):
         config['data'][key] = str(Path(os.environ['CROWD_DATA_ROOT']) / value.removeprefix('data/'))
 Path(os.environ['RUN_DIR'], 'config.yaml').write_text(yaml.safe_dump(config, sort_keys=False))
 print('GPU:', torch.cuda.get_device_name())
+print('All pretrained wav2vec2 encoder weights loaded successfully.')
 print('wav2vec2: final transformer layer 12; tc2 settings; augmentation disabled', flush=True)
 PY
 git rev-parse HEAD > "$RUN_DIR/source-commit.txt"
