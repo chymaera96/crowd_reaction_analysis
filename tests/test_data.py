@@ -306,7 +306,8 @@ def test_training_dataset_can_apply_augmentation_while_validation_is_unchanged(t
 
     assert train_item["waveform"].shape == val_item["waveform"].shape
     assert not torch.allclose(train_item["waveform"], val_item["waveform"])
-    assert torch.allclose(val_item["waveform"], waveform)
+    decoded_waveform, _ = torchaudio.load(str(audio_path))
+    assert torch.equal(val_item["waveform"], decoded_waveform[0])
 
 
 def test_build_split_records_uses_audio_info_for_train_val_partition(tmp_path: Path) -> None:

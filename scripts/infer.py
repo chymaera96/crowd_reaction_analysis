@@ -30,7 +30,7 @@ from crowd_reaction.data import (
     speech_durations_from_records,
 )
 from crowd_reaction.eval import SpeechChunkPrediction, aggregate_chunk_predictions, contiguous_regions
-from crowd_reaction.model import CrowdReactionModel
+from crowd_reaction.model import CrowdReactionModel, load_checkpoint_model
 
 
 PLOTTED_LABEL_ORDER = [
@@ -395,27 +395,7 @@ def active_label_order(chunk_predictions_by_task: dict[str, list[SpeechChunkPred
 
 
 def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.device) -> CrowdReactionModel:
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
-    checkpoint_model_config = checkpoint.get("config", {}).get("model", {})
-    layer_indices = checkpoint_model_config.get("wav2vec2_layer_indices", config["model"].get("wav2vec2_layer_indices"))
-    layer_index = int(checkpoint_model_config.get("wav2vec2_layer_index", config["model"].get("wav2vec2_layer_index", 3)))
-    model = CrowdReactionModel(
-        encoder_type=config["model"].get("encoder_type", "beats"),
-        beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
-        wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
-        wav2vec2_layer_index=layer_index,
-        wav2vec2_layer_indices=layer_indices,
-        head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
-        head_dropout=float(config["model"].get("head_dropout", 0.1)),
-        sample_rate=int(config["data"]["sample_rate"]),
-        chunk_sec=float(config["data"]["chunk_sec"]),
-        instance_sec=float(config["data"]["instance_sec"]),
-        tasks_config=config.get("tasks"),
-    ).to(device)
-    model.load_state_dict(state_dict)
-    model.eval()
-    return model
+    return load_checkpoint_model(config, checkpoint_path, device, model_factory=CrowdReactionModel)
 
 
 def compute_spectrogram(waveform: torch.Tensor, sample_rate: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -566,7 +546,7 @@ def plot_speech(
         waveform = waveform[0]
 
     spectrogram_db, times, freqs = compute_spectrogram(waveform, sample_rate)
-    fig, ax = plt.subplots(figsize=(14, 5))
+    fig, ax = plt.subplots(figsize=(14, 5), layout="constrained")
     extent = [0.0, times[-1] if len(times) else waveform.numel() / sample_rate, 0.0, freqs[-1] if len(freqs) else sample_rate / 2.0]
     image = ax.imshow(
         spectrogram_db,
@@ -640,9 +620,8 @@ def plot_speech(
         score_ax.xaxis.set_major_formatter(FuncFormatter(format_seconds_mmss))
         handles_b, labels_b = score_ax.get_legend_handles_labels()
     ax.legend(handles_a + handles_b, labels_a + labels_b, loc="lower right", ncol=2, fontsize=9)
-    fig.tight_layout()
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=120)
+    fig.savefig(output_path, dpi=120, bbox_inches="tight")
     plt.close(fig)
 
 
@@ -717,8 +696,13 @@ def main() -> None:
             event_threshold=event_threshold,
             attribute_threshold=attribute_threshold,
             instance_sec=float(config["data"]["instance_sec"]),
+            export_labels=("relevant_event",) if label_names == ["relevant_event"] else ("approval", "disapproval"),
         )
         ground_truth_regions = regions_from_annotations(ground_truth_annotations)
+        if label_names == ["relevant_event"]:
+            ground_truth_regions = sorted((start, end, "relevant_event")
+                for label in GROUND_TRUTH_LABEL_ORDER
+                for start, end in ground_truth_annotations.get(label, []))
 
         stem = sanitize_stem(speech_id)
         output_path = output_dir / f"{stem}.png"

@@ -703,25 +703,23 @@ def test_model_with_wav2vec2_style_features_outputs_half_second_logits() -> None
 
 def test_encoder_configs_keep_expected_training_recipes() -> None:
     root = Path(__file__).resolve().parents[1]
-    default_config = yaml.safe_load((root / "configs" / "default.yaml").read_text(encoding="utf-8"))
+    default_config = yaml.safe_load((root / "configs" / "beats.yaml").read_text(encoding="utf-8"))
     wav2vec2_config = yaml.safe_load((root / "configs" / "wav2vec2.yaml").read_text(encoding="utf-8"))
 
     assert default_config["model"]["encoder_type"] == "beats"
     assert default_config["data"]["instance_sec"] == 1.0
     assert default_config["loss"]["unclear_label_weight"] == 0.75
     assert default_config["loss"]["conditional_attribute_loss"] is True
-    assert default_config["augmentation"]["enabled"] is True
-    assert default_config["trainer"]["epochs"] == 15
+    assert default_config["augmentation"]["enabled"] is False
+    assert default_config["trainer"]["epochs"] == 25
     assert wav2vec2_config["model"]["encoder_type"] == "wav2vec2"
     assert wav2vec2_config["model"]["wav2vec2_layer_index"] == 3
     assert wav2vec2_config["data"]["instance_sec"] == 0.5
     assert wav2vec2_config["loss"]["unclear_label_weight"] == 0.75
     assert wav2vec2_config["loss"]["conditional_attribute_loss"] is True
-    assert wav2vec2_config["loss"]["event_mean_target"] == 0.1
-    assert wav2vec2_config["loss"]["approval_mean_target"] == 0.1
-    assert wav2vec2_config["loss"]["disapproval_mean_target"] == 0.1
-    assert wav2vec2_config["augmentation"]["enabled"] is True
-    assert wav2vec2_config["trainer"]["epochs"] == 15
+    assert wav2vec2_config["loss"]["positive_mean_target"] == 0.5
+    assert wav2vec2_config["augmentation"]["enabled"] is False
+    assert wav2vec2_config["trainer"]["epochs"] == 25
 
 
 def test_infer_predicted_regions_and_export_format(tmp_path: Path) -> None:

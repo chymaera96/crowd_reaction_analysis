@@ -1,45 +1,25 @@
 seed: 0
-
 wandb:
   enabled: false
   project: crowd-reaction-analysis
-  entity: null
-  tags: []
-  notes: null
-  mode: online
-
+  mode: disabled
 data:
-  audios_info_csv: /gpfs/scratch/acw723/data/audios_info.csv
-  weak_labels_csv: /gpfs/scratch/acw723/data/weak_labelling/_weak_labels.csv
-  strong_labels_dir: /gpfs/scratch/acw723/data/strong_labelling
-  original_audio_dir: /gpfs/scratch/acw723/data/original_audio_files
-  negative_data_dir: /gpfs/scratch/acw723/data/negative_data
+  audios_info_csv: data/audios_info.csv
+  weak_labels_csv: data/weak_labelling/_weak_labels.csv
+  strong_labels_dir: data/strong_labelling
+  original_audio_dir: data/original_audio_files
+  negative_data_dir: data/negative_data
   sample_rate: 16000
   chunk_sec: 20.0
   instance_sec: 0.5
-
 augmentation:
-  enabled: true
-  lowpass:
-    p: 0.5
-    cutoff_min_hz: 3500
-    cutoff_max_hz: 7500
-  pink_noise:
-    p: 0.5
-    snr_min_db: 5.0
-    snr_max_db: 25.0
-  clipping:
-    p: 0.3
-    min_percentile_threshold: 0
-    max_percentile_threshold: 20
-
+  enabled: false
 model:
   encoder_type: wav2vec2
   wav2vec2_model_name: facebook/wav2vec2-base
-  wav2vec2_layer_index: 3
   head_hidden_dim: 256
   head_dropout: 0.1
-
+  wav2vec2_layer_index: 3
 tasks:
   event:
     enabled: true
@@ -47,30 +27,26 @@ tasks:
     enabled: true
   disapproval:
     enabled: true
-
 optimizer:
-  lr: 3.0e-5
-  weight_decay: 1.0e-4
-
+  lr: 0.0001
+  weight_decay: 0.0001
 loss:
-  event_class_weights: [1.0]
-  approval_class_weights: [1.0]
-  disapproval_class_weights: [1.0]
-  event_mean_target: 0.5
-  approval_mean_target: 0.3
-  disapproval_mean_target: 0.3
+  positive_mean_target: 0.5
+  event_class_weights:
+  - 1.0
+  approval_class_weights:
+  - 1.0
+  disapproval_class_weights:
+  - 1.0
   lambda_approval: 0.5
   lambda_disapproval: 0.5
   unclear_label_weight: 0.75
   conditional_attribute_loss: true
-
 trainer:
   epochs: 25
-
 train:
   batch_size: 4
   num_workers: 0
-
 val:
   batch_size: 4
   num_workers: 0

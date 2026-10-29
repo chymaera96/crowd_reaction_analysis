@@ -24,7 +24,7 @@ if str(SRC) not in sys.path:
 
 from crowd_reaction.data import WeakChunkDataset, build_split_records, collate_batch, speech_durations_from_records
 from crowd_reaction.eval import collect_strong_predictions, evaluate_multitask_weak, evaluate_strong
-from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss, mmm_bag_loss_from_probs
+from crowd_reaction.model import CrowdReactionModel, mmm_bag_loss, mmm_bag_loss_from_probs, linear_softmax_bag_loss, encoder_configuration
 
 
 TASK_SPECS = {
@@ -35,7 +35,7 @@ TASK_SPECS = {
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train crowd reaction SED with frozen BEATs and hierarchical MMM MIL loss")
+    parser = argparse.ArgumentParser(description="Train crowd reaction SED with joint weak supervision")
     parser.add_argument("--config", required=True, help="Path to YAML config")
     parser.add_argument("--output-dir", required=True, help="Directory for checkpoints and metrics")
     parser.add_argument("--run-id", default=None, help="Run identifier used for W&B and checkpoint subdirectory naming")
@@ -137,6 +137,7 @@ def build_dataloader(
         chunk_sec=float(data_config["chunk_sec"]),
         instance_sec=float(data_config["instance_sec"]),
         augmentation_config=augmentation_config,
+        audio_cache_size=int(loader_config.get("audio_cache_size", 0)),
     )
     return DataLoader(
         dataset,
@@ -166,6 +167,9 @@ def compute_multitask_loss(
 ) -> tuple[torch.Tensor, dict[str, float]]:
     total_loss = None
     loss_values: dict[str, float] = {}
+    loss_type = loss_config.get("type", "mmm")
+    if loss_type not in {"mmm", "linear_softmax"}:
+        raise ValueError(f"Unsupported loss type: {loss_type}")
     conditional_attribute_loss = bool(loss_config.get("conditional_attribute_loss", False))
     event_probs = None
     if conditional_attribute_loss and "event" in outputs.instance_logits:
@@ -182,22 +186,18 @@ def compute_multitask_loss(
                 loss_config.get("positive_mean_target", 0.5),
             )
         )
+        task_probs = torch.sigmoid(outputs.instance_logits[task_name])
         if task_name != "event" and conditional_attribute_loss and event_probs is not None:
-            task_probs = event_probs * torch.sigmoid(outputs.instance_logits[task_name])
-            task_loss = mmm_bag_loss_from_probs(
-                task_probs,
-                target_tensor,
-                class_weights=task_class_weights.get(task_name),
+            task_probs = event_probs * task_probs
+        if loss_type == "linear_softmax":
+            task_loss = linear_softmax_bag_loss(
+                task_probs, target_tensor, class_weights=task_class_weights.get(task_name),
                 bag_mask=mask_tensor,
-                positive_mean_target=positive_mean_target,
             )
         else:
-            task_loss = mmm_bag_loss(
-                outputs.instance_logits[task_name],
-                target_tensor,
-                class_weights=task_class_weights.get(task_name),
-                bag_mask=mask_tensor,
-                positive_mean_target=positive_mean_target,
+            task_loss = mmm_bag_loss_from_probs(
+                task_probs, target_tensor, class_weights=task_class_weights.get(task_name),
+                bag_mask=mask_tensor, positive_mean_target=positive_mean_target,
             )
         if task_name == "event":
             weighted_loss = task_loss
@@ -244,6 +244,8 @@ def evaluate_epoch(
         speech_durations = speech_durations_from_records(val_loader.dataset.records)
         strong_metrics = {}
         for task_name in ("event", "approval", "disapproval"):
+            if task_name not in getattr(model, "enabled_tasks", ("event", "approval", "disapproval")):
+                continue
             task_events = strong_events_by_task.get(task_name, [])
             task_predictions = chunk_predictions_by_task.get(task_name, [])
             if not task_events and not task_predictions:
@@ -279,6 +281,7 @@ def save_checkpoint(
     torch.save(
         {
             "model_state_dict": model.state_dict(),
+            "encoder_config": encoder_configuration(model),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch,
             "metrics": metrics,
@@ -392,6 +395,22 @@ def init_wandb(config: dict[str, Any], output_dir: Path, *, run_id: str | None, 
     return run
 
 
+
+def checkpoint_selection_scores(metrics: dict[str, Any], enabled_tasks) -> dict[str, float]:
+    scores = {"best_relevant_event_f1.pt": validation_score(metrics, "event_f1")}
+    if {"approval", "disapproval"}.issubset(enabled_tasks):
+        scores.update({
+            "best_weak_polarity_auprc.pt": weak_polarity_auprc_score(metrics),
+            "best_polarity_segment_f1.pt": polarity_validation_score(metrics, "segment_macro_f1"),
+            "best_polarity_event_f1.pt": polarity_validation_score(metrics, "event_f1"),
+        })
+    else:
+        scores["best_event_segment_f1.pt"] = validation_score(metrics, "segment_macro_f1")
+        ap = _finite_float(metrics["weak"]["event"]["macro_average_precision"])
+        scores["best_weak_event_auprc.pt"] = 0.0 if ap is None else ap
+    return scores
+
+
 def main() -> None:
     args = parse_args()
     config = apply_cli_overrides(load_config(args.config), args)
@@ -430,6 +449,9 @@ def main() -> None:
         wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
         wav2vec2_layer_index=int(config["model"].get("wav2vec2_layer_index", 3)),
         wav2vec2_layer_indices=layer_indices,
+        cnn_config=config["model"].get("cnn_config"),
+        mil_pooling=config["model"].get("mil_pooling", "max"),
+        conditional_bag_pooling=config["model"].get("conditional_bag_pooling", False),
         head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
         head_dropout=float(config["model"].get("head_dropout", 0.1)),
         sample_rate=int(config["data"]["sample_rate"]),
@@ -446,10 +468,15 @@ def main() -> None:
 
     task_class_weights = _task_class_weights(config.get("loss", {}), device)
 
-    best_weak_polarity_auprc = float("-inf")
-    best_polarity_segment_f1 = float("-inf")
-    best_polarity_event_f1 = float("-inf")
-    best_relevant_event_f1 = float("-inf")
+    best_scores: dict[str, float] = {}
+    stats = {"parameters": sum(p.numel() for p in model.parameters()),
+             "trainable_parameters": sum(p.numel() for p in model.parameters() if p.requires_grad),
+             "train_records": len(split_datasets.train_records),
+             "validation_records": len(split_datasets.val_records),
+             "enabled_tasks": list(model.enabled_tasks)}
+    (output_dir / "model_stats.json").write_text(json.dumps(stats, indent=2) + "\n")
+    (output_dir / "effective_config.yaml").write_text(yaml.safe_dump(config, sort_keys=False))
+    print(json.dumps(stats), flush=True)
     history = []
 
     show_progress = not bool(args.no_progress)
@@ -516,62 +543,16 @@ def main() -> None:
             config=config,
         )
 
-        weak_polarity_auprc = weak_polarity_auprc_score(metrics)
-        if weak_polarity_auprc >= best_weak_polarity_auprc:
-            best_weak_polarity_auprc = weak_polarity_auprc
-            save_checkpoint(
-                output_dir / "best_weak_polarity_auprc.pt",
-                model=model,
-                optimizer=optimizer,
-                epoch=epoch,
-                metrics=metrics,
-                config=config,
-            )
-        polarity_segment_f1 = polarity_validation_score(metrics, "segment_macro_f1")
-        polarity_event_f1 = polarity_validation_score(metrics, "event_f1")
-        relevant_event_f1 = validation_score(metrics, "event_f1")
-        if polarity_segment_f1 >= best_polarity_segment_f1:
-            best_polarity_segment_f1 = polarity_segment_f1
-            save_checkpoint(
-                output_dir / "best_polarity_segment_f1.pt",
-                model=model,
-                optimizer=optimizer,
-                epoch=epoch,
-                metrics=metrics,
-                config=config,
-            )
-        if polarity_event_f1 >= best_polarity_event_f1:
-            best_polarity_event_f1 = polarity_event_f1
-            save_checkpoint(
-                output_dir / "best_polarity_event_f1.pt",
-                model=model,
-                optimizer=optimizer,
-                epoch=epoch,
-                metrics=metrics,
-                config=config,
-            )
-        if relevant_event_f1 >= best_relevant_event_f1:
-            best_relevant_event_f1 = relevant_event_f1
-            save_checkpoint(
-                output_dir / "best_relevant_event_f1.pt",
-                model=model,
-                optimizer=optimizer,
-                epoch=epoch,
-                metrics=metrics,
-                config=config,
-            )
-        print(
-            " | ".join(
-                [
-                    f"epoch {epoch}/{total_epochs}",
-                    f"train_loss={metrics['train_loss']:.4f}",
-                    f"weak_polarity_auprc={weak_polarity_auprc:.4f}",
-                    f"polarity_segment_f1={polarity_segment_f1:.4f}",
-                    f"polarity_event_f1={polarity_event_f1:.4f}",
-                    f"relevant_event_f1={relevant_event_f1:.4f}",
-                ]
-            )
-        )
+        scores = checkpoint_selection_scores(metrics, model.enabled_tasks)
+        for checkpoint_name, score in scores.items():
+            if score >= best_scores.get(checkpoint_name, float("-inf")):
+                best_scores[checkpoint_name] = score
+                save_checkpoint(output_dir / checkpoint_name, model=model, optimizer=optimizer,
+                                epoch=epoch, metrics=metrics, config=config)
+        (output_dir / "history.json").write_text(json.dumps(history, indent=2))
+        print(" | ".join([f"epoch {epoch}/{total_epochs}", f"train_loss={metrics['train_loss']:.4f}"] +
+                         [f"{name.removeprefix('best_').removesuffix('.pt')}={value:.4f}"
+                          for name, value in scores.items()]), flush=True)
         if wandb_run is not None:
             wandb_run.log(wandb_validation_payload(metrics) | wav2vec2_fusion_payload(model), step=epoch)
 
@@ -579,17 +560,9 @@ def main() -> None:
         json.dump(history, handle, indent=2)
 
     if wandb_run is not None:
-        wandb_run.summary["best_weak_polarity_auprc"] = best_weak_polarity_auprc
-        wandb_run.summary["best_polarity_segment_f1"] = best_polarity_segment_f1
-        wandb_run.summary["best_polarity_event_f1"] = best_polarity_event_f1
-        wandb_run.summary["best_relevant_event_f1"] = best_relevant_event_f1
-        for checkpoint_name in (
-            "last.pt",
-            "best_weak_polarity_auprc.pt",
-            "best_polarity_segment_f1.pt",
-            "best_polarity_event_f1.pt",
-            "best_relevant_event_f1.pt",
-        ):
+        for checkpoint_name, score in best_scores.items():
+            wandb_run.summary[checkpoint_name.removesuffix(".pt")] = score
+        for checkpoint_name in ("last.pt", *best_scores):
             checkpoint_path = output_dir / checkpoint_name
             if checkpoint_path.exists():
                 wandb_run.save(str(checkpoint_path), policy="now")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from collections import OrderedDict
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -684,7 +685,10 @@ class WeakChunkDataset(torch.utils.data.Dataset):
         instance_sec: float = 1.0,
         num_classes: int = 1,
         augmentation_config: dict[str, Any] | None = None,
+        audio_cache_size: int = 0,
     ) -> None:
+        self.audio_cache_size = max(0, int(audio_cache_size))
+        self._audio_cache: OrderedDict[str, torch.Tensor] = OrderedDict()
         self.sample_rate = int(sample_rate)
         self.chunk_sec = float(chunk_sec)
         self.instance_sec = float(instance_sec)
@@ -701,7 +705,15 @@ class WeakChunkDataset(torch.utils.data.Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         record = self.records[index]
-        waveform = load_audio_mono(record.audio_path, sample_rate=self.sample_rate)
+        if record.audio_path in self._audio_cache:
+            waveform = self._audio_cache[record.audio_path]
+            self._audio_cache.move_to_end(record.audio_path)
+        else:
+            waveform = load_audio_mono(record.audio_path, sample_rate=self.sample_rate)
+            if self.audio_cache_size:
+                self._audio_cache[record.audio_path] = waveform
+                if len(self._audio_cache) > self.audio_cache_size:
+                    self._audio_cache.popitem(last=False)
         chunk = slice_waveform(
             waveform,
             start_sec=record.chunk_start_sec,

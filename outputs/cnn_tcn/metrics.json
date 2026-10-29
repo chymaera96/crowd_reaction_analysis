@@ -1,0 +1,68 @@
+{
+  "model": "cnn_tcn",
+  "evaluation": {
+    "instance_sec": 0.04,
+    "event_threshold": 0.5,
+    "attribute_threshold": 0.5,
+    "event_collar_sec": 1.0,
+    "event_offset_ratio": 0.4
+  },
+  "metrics": {
+    "relevant_event": {
+      "segment": {
+        "precision": 0.9084738790621144,
+        "recall": 0.8341831916902739,
+        "f1": 0.8697450034458994
+      },
+      "event": {
+        "precision": 0.2625,
+        "recall": 0.6885245901639344,
+        "f1": 0.38009049773755654
+      }
+    },
+    "approval": {
+      "segment": {
+        "precision": 0.841743804120633,
+        "recall": 0.7603506405933917,
+        "f1": 0.7989796641394458
+      },
+      "event": {
+        "precision": 0.08178438661710037,
+        "recall": 0.5945945945945946,
+        "f1": 0.1437908496732026
+      }
+    },
+    "disapproval": {
+      "segment": {
+        "precision": 0.6988727858293076,
+        "recall": 0.4599081596608972,
+        "f1": 0.5547507456327226
+      },
+      "event": {
+        "precision": 0.03759398496240601,
+        "recall": 0.29411764705882354,
+        "f1": 0.06666666666666667
+      }
+    }
+  },
+  "weak_metrics": {
+    "event": {
+      "macro_auroc": 0.9791666666666666,
+      "macro_average_precision": 0.997116812728432,
+      "macro_precision": 0.9682539682539683,
+      "macro_f1": 0.9606299212598425
+    },
+    "approval": {
+      "macro_auroc": 0.9616161616161616,
+      "macro_average_precision": 0.9915376253687105,
+      "macro_precision": 0.9555555555555556,
+      "macro_f1": 0.9555555555555556
+    },
+    "disapproval": {
+      "macro_auroc": 0.8596491228070176,
+      "macro_average_precision": 0.8510637427273646,
+      "macro_precision": 1.0,
+      "macro_f1": 0.8
+    }
+  }
+}

@@ -1,8 +1,12 @@
 __pycache__/
 .pytest_cache/
-*.pyc
+*.py[cod]
+.DS_Store
+.venv*/
+*.egg-info/
 data/
-*.png
-*.csv
-*.json
-outputs/
+weights/
+training/
+api_outputs/
+outputs/**/*.log
+outputs/**/scores.json

@@ -1,0 +1,32 @@
+{
+  "model": "cnn_tcn_event",
+  "evaluation": {
+    "instance_sec": 0.04,
+    "event_threshold": 0.5,
+    "attribute_threshold": 0.5,
+    "event_collar_sec": 1.0,
+    "event_offset_ratio": 0.4
+  },
+  "metrics": {
+    "relevant_event": {
+      "segment": {
+        "precision": 0.8828647925033467,
+        "recall": 0.8718602455146365,
+        "f1": 0.8773280121626759
+      },
+      "event": {
+        "precision": 0.2536231884057971,
+        "recall": 0.5737704918032787,
+        "f1": 0.35175879396984927
+      }
+    }
+  },
+  "weak_metrics": {
+    "event": {
+      "macro_auroc": 0.9861111111111112,
+      "macro_average_precision": 0.99803963629963,
+      "macro_precision": 0.9841269841269841,
+      "macro_f1": 0.9763779527559054
+    }
+  }
+}

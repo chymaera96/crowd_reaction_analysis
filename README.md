@@ -1,147 +1,145 @@
-# crowd_reaction_analysis
+# Crowd reaction analysis
 
-Sound event detection for crowd reactions in political speech audio. The public usage path is `scripts/api.py`, which runs a trained checkpoint on one audio file and writes score functions, predicted segments, and a plot.
+Sound event detection for crowd presence, approval, and disapproval in speech audio.
+The primary architectures are BEATs, wav2vec2, and CNN–TCN.
+[HANDOVER.md](HANDOVER.md) describes their architectures and training recipes.
 
 ## Installation
 
-Create and activate the environment:
+Use Python 3.11 or 3.12. Run commands from the repository root.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[test]"
+```
+
+A Conda environment is also provided:
 
 ```bash
 conda env create -f environment.yml
 conda activate crowd-reaction-analysis
-pip install -e .
+python -m pip install -e ".[test]"
 ```
 
-## Pretrained Models
+## Models and weights
 
-The repo supports two frozen audio encoders:
+Place the supplied classifier checkpoints in `weights/`:
 
-- BEATs: `configs/default.yaml`
-- wav2vec2: `configs/wav2vec2.yaml`
+| Model | Configuration | Local weights | Output rate |
+|---|---|---|---|
+| BEATs | `configs/beats.yaml` | `weights/beats.pt` | 1 Hz |
+| wav2vec2 | `configs/wav2vec2.yaml` | `weights/wav2vec2.pt` | 2 Hz |
+| CNN–TCN, joint | `configs/cnn_tcn.yaml` | `weights/cnn_tcn.pt` | 25 Hz |
+| CNN–TCN, event only | `configs/cnn_tcn_event.yaml` | `weights/cnn_tcn_event.pt` | 25 Hz |
 
-BEATs uses a local checkpoint configured by:
+The checkpoints include their encoder configuration and weights. Inference loads
+locally. The `weights/` directory is distributed separately from Git.
 
-```yaml
-model:
-  encoder_type: beats
-  beats_checkpoint_path: /path/to/BEATs_iter3_plus_AS2M_finetuned_on_AS2M_cpt2.pt
-```
+## Inference
 
-Update `model.beats_checkpoint_path` before using the BEATs config on a new machine.
-The BEATs checkpoint can be downloaded from [here](https://1drv.ms/u/s!AqeByhGUtINrgcpj8ujXH1YUtxooEg?e=E9Ncea).
-
-wav2vec2 uses Hugging Face Transformers:
-
-```yaml
-model:
-  encoder_type: wav2vec2
-  wav2vec2_model_name: facebook/wav2vec2-base
-  wav2vec2_layer_index: 3
-```
-
-`wav2vec2_layer_index` selects one transformer layer directly (1–12 for
-`facebook/wav2vec2-base`). For ablation runs it can be overridden without
-editing the config:
-
-```bash
-python scripts/train.py \
-  --config configs/wav2vec2.yaml \
-  --output-dir outputs/w2v_layer3 \
-  --wav2vec2-layer 3
-```
-
-To learn a scalar fusion over several frozen transformer layers instead:
-
-```bash
-python scripts/train.py \
-  --config configs/wav2vec2.yaml \
-  --output-dir outputs/w2v_fusion_3_6_9_12 \
-  --wav2vec2-layers 3 6 9 12
-```
-
-The fusion softmax weights and global scale are optimized with the classifier
-heads and logged to W&B on every epoch.
-
-The wav2vec2 weights are downloaded automatically by `transformers` and cached in the Hugging Face cache. If your machine cannot write to the default cache, set a writable cache location before running:
-
-```bash
-export HF_HOME=/path/to/writable/huggingface_cache
-```
-
-Both configs expect 16 kHz mono audio. BEATs currently uses 1 s output bins, while wav2vec2 uses 0.5 s output bins.
-
-## API Usage
-
-Run one audio file through a trained checkpoint:
+Run the joint CNN–TCN model on an audio file:
 
 ```bash
 python scripts/api.py \
-  --config configs/wav2vec2.yaml \
-  --checkpoint outputs/w2v_layer3/best_weak_polarity_auprc.pt \
-  --audio /path/to/input.wav \
-  --output-dir api_outputs/example \
-  --mode polarity \
-  --batch-size 1
+  --config configs/cnn_tcn.yaml \
+  --checkpoint weights/cnn_tcn.pt \
+  --audio /path/to/audio.wav \
+  --output-dir annotations/example \
+  --mode polarity --batch-size 1 --device cpu
+```
+
+For BEATs or wav2vec2, replace the configuration and weight filenames with the
+corresponding pair from the table. Audio is resampled and mixed to mono.
+Use `--device cuda` for GPU inference.
+
+For crowd presence/absence with the event-only model:
+
+```bash
+python scripts/api.py \
+  --config configs/cnn_tcn_event.yaml \
+  --checkpoint weights/cnn_tcn_event.pt \
+  --audio /path/to/audio.wav \
+  --output-dir annotations/events \
+  --mode event --batch-size 1 --device cpu
 ```
 
 The API writes:
 
-- `scores.json`: score functions as JSON lists
-- `predicted_segments.csv`: Sonic Visualiser-style rows, `start_sec,duration,label`
-- `plot.png`: spectrogram with prediction spans and optional score functions
+- `predicted_segments.csv`: headerless Sonic Visualiser rows, `start_seconds,duration_seconds,label`.
+- `scores.json`: temporal probability scores.
+- `plot.png`: spectrogram, predictions, and score functions.
 
-Modes:
+`--mode polarity` exports approval/disapproval segments. `--mode event` exports
+`relevant_event` segments. Override thresholds with `--event-threshold` and
+`--attribute-threshold`. `--median-filter-sec` controls segment smoothing (default
+3 seconds); use `0` to retain raw thresholded boundaries. `--no-score-functions`
+hides score curves. Add `--annotations /path/to/labels.txt` to overlay ground truth.
 
-- `--mode polarity`: default mode. Exports `approval` and `disapproval` predicted spans. The approval/disapproval score functions are event-conditioned.
-- `--mode event`: exports only `relevant_event` predicted spans, with no approval/disapproval assignment.
+The saved MLK speech annotations are in `annotations/mlk.csv`.
 
-Useful CLI options:
+## Training data
+
+Arrange the dataset as follows:
+
+```text
+data/
+  audios_info.csv
+  original_audio_files/*.wav
+  weak_labelling/_weak_labels.csv
+  strong_labelling/*.txt
+  negative_data/*.wav
+```
+
+`audios_info.csv` contains `title` and `strong_label`. Weak labels contain
+`source_file`, `start_sec`, `end_sec`, `clear_approval`, `unclear_approval`,
+`clear_disapproval`, `unclear_disapproval`, `crowd_chorus`, and `no_crowd`.
+Strong TXT files contain tab-separated `onset_seconds`, `offset_seconds`, and
+label. Sources with strong annotations are reserved for validation. Update
+`data` paths in the configuration when using another directory layout.
+
+## Training and validation
 
 ```bash
---event-threshold 0.6
---attribute-threshold 0.5
---median-filter-sec 1.5
---no-score-functions
---no-progress
---device cpu
---device cuda
---device mps
+python scripts/check_data.py --config configs/cnn_tcn.yaml --decode-audio
+python scripts/train.py \
+  --config configs/cnn_tcn.yaml --output-dir training/cnn_tcn --wandb-mode disabled
+python scripts/results.py \
+  --config configs/cnn_tcn.yaml \
+  --checkpoint training/cnn_tcn/best_polarity_segment_f1.pt \
+  --output outputs/cnn_tcn/metrics.json
 ```
 
+Use `configs/beats.yaml` or `configs/wav2vec2.yaml` to train the frozen-encoder
+classifiers. BEATs initializes its frozen encoder from `weights/beats.pt`.
+wav2vec2 training downloads `facebook/wav2vec2-base` through Transformers.
+Training uses CUDA when available and CPU otherwise.
 
-Python usage:
+Use `configs/cnn_tcn_event.yaml` to train an event-only model. Its segment-F1
+checkpoint is `best_event_segment_f1.pt`. Joint models save
+`best_polarity_segment_f1.pt`, `best_polarity_event_f1.pt`,
+`best_weak_polarity_auprc.pt`, `best_relevant_event_f1.pt`, and `last.pt`.
 
-```python
-from scripts.api import (
-    plot_inference_result,
-    run_audio_inference,
-    write_predicted_segments_csv,
-    write_scores_json,
-)
+Generate annotated validation plots with:
 
-result = run_audio_inference(
-    audio_path="/path/to/input.wav",
-    config_path="configs/wav2vec2.yaml",
-    checkpoint_path="outputs/w2v_layer3/best_weak_polarity_auprc.pt",
-    mode="polarity",
-    batch_size=1,
-)
-
-write_scores_json(result, "api_outputs/example/scores.json")
-write_predicted_segments_csv(result, "api_outputs/example/predicted_segments.csv")
-plot_inference_result(result, "api_outputs/example/plot.png")
+```bash
+python scripts/infer.py \
+  --config configs/cnn_tcn.yaml --checkpoint weights/cnn_tcn.pt \
+  --output-dir annotations/validation --wandb-mode disabled
 ```
 
-The returned `result` contains:
+This also exports predicted and ground-truth segment CSVs. The saved validation
+plots and overall metrics are in `outputs/<model>/`; the combined table is
+`outputs/validation_metrics.csv`. The CNN–TCN folder also includes the MLK plot.
 
-- `label_names`
-- `times_sec`
-- `scores`
-- `predicted_regions`
-- thresholds and metadata used for the run
+## Tests
 
-You can edit `result.scores` or `result.predicted_regions` before plotting if you want custom post-processing.
+```bash
+python -m pytest -q
+```
 
 ## Citation
 
-Citation details will be available soon.
+Hermida Carrillo, A. C., Bhattacharjee, A., & Benetos, E. *To the sound of your
+applause: a signal processing approach to crowd-speaker communication in political
+speeches.* UK and Ireland (UKIS) Workshop.

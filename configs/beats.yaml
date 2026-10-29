@@ -1,0 +1,56 @@
+seed: 0
+wandb:
+  enabled: false
+  project: crowd-reaction-analysis
+  mode: disabled
+data:
+  audios_info_csv: data/audios_info.csv
+  weak_labels_csv: data/weak_labelling/_weak_labels.csv
+  strong_labels_dir: data/strong_labelling
+  original_audio_dir: data/original_audio_files
+  negative_data_dir: data/negative_data
+  sample_rate: 16000
+  chunk_sec: 20.0
+  instance_sec: 1.0
+augmentation:
+  enabled: false
+model:
+  encoder_type: beats
+  beats_checkpoint_path: weights/beats.pt
+  head_hidden_dim: 256
+  head_dropout: 0.1
+tasks:
+  event:
+    enabled: true
+  approval:
+    enabled: true
+  disapproval:
+    enabled: true
+optimizer:
+  lr: 0.0001
+  weight_decay: 0.0001
+loss:
+  positive_mean_target: 0.5
+  event_class_weights:
+  - 1.0
+  approval_class_weights:
+  - 1.0
+  disapproval_class_weights:
+  - 1.0
+  lambda_approval: 0.5
+  lambda_disapproval: 0.5
+  unclear_label_weight: 0.75
+  conditional_attribute_loss: true
+trainer:
+  epochs: 25
+train:
+  batch_size: 4
+  num_workers: 0
+val:
+  batch_size: 4
+  num_workers: 0
+  threshold: 0.5
+  event_threshold: 0.2
+  attribute_threshold: 0.3
+  event_collar_sec: 1.0
+  event_offset_ratio: 0.2

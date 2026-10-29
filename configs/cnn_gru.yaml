@@ -1,0 +1,74 @@
+seed: 0
+wandb:
+  enabled: false
+  project: crowd-reaction-analysis
+  mode: disabled
+data:
+  audios_info_csv: data/audios_info.csv
+  weak_labels_csv: data/weak_labelling/_weak_labels.csv
+  strong_labels_dir: data/strong_labelling
+  original_audio_dir: data/original_audio_files
+  negative_data_dir: data/negative_data
+  sample_rate: 16000
+  chunk_sec: 20.0
+  instance_sec: 0.04
+augmentation:
+  enabled: true
+  lowpass:
+    p: 0.3
+    cutoff_min_hz: 3500
+    cutoff_max_hz: 7500
+  pink_noise:
+    p: 0.3
+    snr_min_db: 10.0
+    snr_max_db: 25.0
+  clipping:
+    p: 0.2
+    min_percentile_threshold: 0
+    max_percentile_threshold: 10
+model:
+  encoder_type: cnn_gru
+  head_hidden_dim: 64
+  head_dropout: 0.1
+  mil_pooling: max
+  conditional_bag_pooling: true
+  cnn_config:
+    dropout: 0.1
+tasks:
+  event:
+    enabled: true
+  approval:
+    enabled: true
+  disapproval:
+    enabled: true
+optimizer:
+  lr: 0.001
+  weight_decay: 0.0001
+loss:
+  type: mmm
+  positive_mean_target: 0.5
+  event_class_weights:
+  - 1.0
+  approval_class_weights:
+  - 1.0
+  disapproval_class_weights:
+  - 1.0
+  lambda_approval: 0.5
+  lambda_disapproval: 0.5
+  unclear_label_weight: 0.75
+  conditional_attribute_loss: true
+trainer:
+  epochs: 40
+train:
+  batch_size: 8
+  num_workers: 0
+  audio_cache_size: 256
+val:
+  batch_size: 8
+  num_workers: 0
+  audio_cache_size: 256
+  threshold: 0.5
+  event_threshold: 0.5
+  attribute_threshold: 0.5
+  event_collar_sec: 1.0
+  event_offset_ratio: 0.4

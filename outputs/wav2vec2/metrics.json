@@ -1,0 +1,68 @@
+{
+  "model": "wav2vec2",
+  "evaluation": {
+    "instance_sec": 0.5,
+    "event_threshold": 0.5,
+    "attribute_threshold": 0.5,
+    "event_collar_sec": 1.0,
+    "event_offset_ratio": 0.4
+  },
+  "metrics": {
+    "relevant_event": {
+      "segment": {
+        "precision": 0.49318801089918257,
+        "recall": 0.40266963292547275,
+        "f1": 0.4433557868952848
+      },
+      "event": {
+        "precision": 0.011363636363636364,
+        "recall": 0.03278688524590164,
+        "f1": 0.01687763713080169
+      }
+    },
+    "approval": {
+      "segment": {
+        "precision": 0.6210268948655256,
+        "recall": 0.405103668261563,
+        "f1": 0.4903474903474903
+      },
+      "event": {
+        "precision": 0.020833333333333332,
+        "recall": 0.08108108108108109,
+        "f1": 0.03314917127071823
+      }
+    },
+    "disapproval": {
+      "segment": {
+        "precision": 0.13068181818181818,
+        "recall": 0.09504132231404959,
+        "f1": 0.11004784688995214
+      },
+      "event": {
+        "precision": 0.02040816326530612,
+        "recall": 0.11764705882352941,
+        "f1": 0.034782608695652174
+      }
+    }
+  },
+  "weak_metrics": {
+    "event": {
+      "macro_auroc": 0.8541666666666666,
+      "macro_average_precision": 0.9729330601582571,
+      "macro_precision": 0.9636363636363636,
+      "macro_f1": 0.8907563025210083
+    },
+    "approval": {
+      "macro_auroc": 0.8727272727272727,
+      "macro_average_precision": 0.9702008879160033,
+      "macro_precision": 0.8181818181818182,
+      "macro_f1": 0.9
+    },
+    "disapproval": {
+      "macro_auroc": 0.7470760233918129,
+      "macro_average_precision": 0.5502022005936251,
+      "macro_precision": 0.4090909090909091,
+      "macro_f1": 0.5806451612903226
+    }
+  }
+}

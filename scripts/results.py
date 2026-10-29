@@ -17,7 +17,7 @@ if str(SRC) not in sys.path:
 
 from crowd_reaction.data import WeakChunkDataset, build_strong_validation_split, collate_batch, speech_durations_from_records
 from crowd_reaction.eval import collect_strong_predictions, evaluate_strong
-from crowd_reaction.model import CrowdReactionModel
+from crowd_reaction.model import CrowdReactionModel, load_checkpoint_model
 from torch.utils.data import DataLoader
 
 
@@ -62,27 +62,7 @@ def build_val_loader(config: dict[str, Any], records, *, batch_size: int | None)
 
 
 def load_model(config: dict[str, Any], checkpoint_path: str, device: torch.device) -> CrowdReactionModel:
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    state_dict = checkpoint.get("model_state_dict", checkpoint)
-    checkpoint_model_config = checkpoint.get("config", {}).get("model", {})
-    layer_indices = checkpoint_model_config.get("wav2vec2_layer_indices", config["model"].get("wav2vec2_layer_indices"))
-    layer_index = int(checkpoint_model_config.get("wav2vec2_layer_index", config["model"].get("wav2vec2_layer_index", 3)))
-    model = CrowdReactionModel(
-        encoder_type=config["model"].get("encoder_type", "beats"),
-        beats_checkpoint_path=config["model"].get("beats_checkpoint_path"),
-        wav2vec2_model_name=config["model"].get("wav2vec2_model_name", "facebook/wav2vec2-base"),
-        wav2vec2_layer_index=layer_index,
-        wav2vec2_layer_indices=layer_indices,
-        head_hidden_dim=int(config["model"].get("head_hidden_dim", 256)),
-        head_dropout=float(config["model"].get("head_dropout", 0.1)),
-        sample_rate=int(config["data"]["sample_rate"]),
-        chunk_sec=float(config["data"]["chunk_sec"]),
-        instance_sec=float(config["data"]["instance_sec"]),
-        tasks_config=config.get("tasks"),
-    ).to(device)
-    model.load_state_dict(state_dict)
-    model.eval()
-    return model
+    return load_checkpoint_model(config, checkpoint_path, device, model_factory=CrowdReactionModel)
 
 
 def thresholds_from_config(config: dict[str, Any]) -> dict[str, float]:
@@ -152,6 +132,8 @@ def compute_strong_results(
 
     metrics: dict[str, dict[str, Any]] = {}
     for task_name, label_name in TASK_LABELS.items():
+        if task_name not in getattr(model, "enabled_tasks", TASK_LABELS):
+            continue
         task_events = strong_events_by_task.get(task_name, [])
         task_predictions = chunk_predictions_by_task.get(task_name, [])
         if not task_events and not task_predictions:

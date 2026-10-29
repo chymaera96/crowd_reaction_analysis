@@ -45,18 +45,26 @@ class DummyFeatureExtractor(nn.Module):
 
 
 class FrozenBEATsFeatureExtractor(nn.Module):
-    def __init__(self, checkpoint_path: str) -> None:
+    def __init__(self, checkpoint_path: str | None = None, encoder_config: dict | None = None) -> None:
         super().__init__()
         from .beats import BEATs, BEATsConfig
 
-        try:
+        encoder_state = None
+        if encoder_config is None:
+            if checkpoint_path is None:
+                raise ValueError("A BEATs checkpoint or encoder configuration is required")
             checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
-        except EOFError as exc:
-            raise RuntimeError(f"BEATs checkpoint at {checkpoint_path} appears truncated or corrupt") from exc
-
-        config = BEATsConfig(checkpoint["cfg"])
-        self.encoder = BEATs(config)
-        self.encoder.load_state_dict(checkpoint["model"])
+            if "encoder_config" in checkpoint and "model_state_dict" in checkpoint:
+                encoder_config = checkpoint["encoder_config"]
+                prefix = "feature_extractor.encoder."
+                encoder_state = {key.removeprefix(prefix): value
+                                 for key, value in checkpoint["model_state_dict"].items()
+                                 if key.startswith(prefix)}
+            else:
+                encoder_config, encoder_state = checkpoint["cfg"], checkpoint["model"]
+        self.encoder = BEATs(BEATsConfig(encoder_config))
+        if encoder_state is not None:
+            self.encoder.load_state_dict(encoder_state)
         self.output_dim = int(self.encoder.cfg.encoder_embed_dim)
 
         for parameter in self.encoder.parameters():
@@ -100,6 +108,7 @@ class FrozenWav2Vec2FeatureExtractor(nn.Module):
         model_name: str = "facebook/wav2vec2-base",
         layer_index: int | None = 3,
         layer_indices: tuple[int, ...] | list[int] | None = None,
+        encoder_config: dict | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -110,7 +119,11 @@ class FrozenWav2Vec2FeatureExtractor(nn.Module):
                 "Install project dependencies before using model.encoder_type=wav2vec2."
             ) from exc
 
-        self.encoder = Wav2Vec2Model.from_pretrained(model_name)
+        if encoder_config is not None:
+            from transformers import Wav2Vec2Config
+            self.encoder = Wav2Vec2Model(Wav2Vec2Config.from_dict(encoder_config))
+        else:
+            self.encoder = Wav2Vec2Model.from_pretrained(model_name)
         self.output_dim = int(self.encoder.config.hidden_size)
         num_hidden_layers = int(self.encoder.config.num_hidden_layers)
         self.layer_indices = None if layer_indices is None else tuple(int(index) for index in layer_indices)
@@ -201,6 +214,10 @@ class CrowdReactionModel(nn.Module):
         wav2vec2_model_name: str = "facebook/wav2vec2-base",
         wav2vec2_layer_index: int = 3,
         wav2vec2_layer_indices: tuple[int, ...] | list[int] | None = None,
+        cnn_config: dict | None = None,
+        encoder_config: dict | None = None,
+        mil_pooling: str = "max",
+        conditional_bag_pooling: bool = False,
         head_hidden_dim: int = 256,
         head_dropout: float = 0.1,
         sample_rate: int = 16000,
@@ -212,18 +229,29 @@ class CrowdReactionModel(nn.Module):
         if feature_extractor is None:
             encoder_type = str(encoder_type).strip().lower()
             if encoder_type == "beats":
-                if beats_checkpoint_path is None:
+                if beats_checkpoint_path is None and encoder_config is None:
                     raise ValueError("beats_checkpoint_path is required when encoder_type='beats'")
-                feature_extractor = FrozenBEATsFeatureExtractor(beats_checkpoint_path)
+                feature_extractor = FrozenBEATsFeatureExtractor(beats_checkpoint_path, encoder_config=encoder_config)
             elif encoder_type == "wav2vec2":
                 feature_extractor = FrozenWav2Vec2FeatureExtractor(
                     wav2vec2_model_name,
                     layer_index=wav2vec2_layer_index,
                     layer_indices=wav2vec2_layer_indices,
+                    encoder_config=encoder_config,
+                )
+            elif encoder_type in {"cnn", "cnn_tcn", "cnn_gru"}:
+                from .cnn import SpectrogramCNNEncoder
+                feature_extractor = SpectrogramCNNEncoder(
+                    architecture={"cnn": "cnn", "cnn_tcn": "tcn", "cnn_gru": "gru"}[encoder_type],
+                    sample_rate=sample_rate, **(cnn_config or {}),
                 )
             else:
                 raise ValueError(f"Unsupported encoder_type: {encoder_type}")
         self.feature_extractor = feature_extractor
+        if mil_pooling not in {"max", "linear_softmax"}:
+            raise ValueError(f"Unsupported MIL pooling: {mil_pooling}")
+        self.mil_pooling = mil_pooling
+        self.conditional_bag_pooling = bool(conditional_bag_pooling)
         self.sample_rate = int(sample_rate)
         self.chunk_sec = float(chunk_sec)
         self.instance_sec = float(instance_sec)
@@ -270,7 +298,14 @@ class CrowdReactionModel(nn.Module):
 
         embeddings = self.feature_extractor(instances)
         instance_logits = {task_name: head(embeddings) for task_name, head in self.heads.items()}
-        bag_probabilities = {task_name: torch.sigmoid(task_logits).amax(dim=1) for task_name, task_logits in instance_logits.items()}
+        probabilities = {task: torch.sigmoid(logits) for task, logits in instance_logits.items()}
+        if self.conditional_bag_pooling:
+            probabilities = {task: probs if task == "event" else probs * probabilities["event"]
+                             for task, probs in probabilities.items()}
+        bag_probabilities = {
+            task: linear_softmax_pool(probs) if self.mil_pooling == "linear_softmax" else probs.amax(dim=1)
+            for task, probs in probabilities.items()
+        }
         return MultiTaskOutputs(instance_logits=instance_logits, bag_probabilities=bag_probabilities)
 
 
@@ -355,3 +390,69 @@ def mmm_bag_loss_from_probs(
     if float(normalizer.detach().item()) <= 0.0:
         return losses.sum() * 0.0
     return masked_losses.sum() / normalizer
+
+
+def linear_softmax_pool(instance_probs: torch.Tensor) -> torch.Tensor:
+    """Parameter-free MIL pooling, independently for each class."""
+    return instance_probs.square().sum(dim=1) / instance_probs.sum(dim=1).clamp_min(1e-7)
+
+
+def linear_softmax_bag_loss(instance_probs: torch.Tensor, bag_labels: torch.Tensor,
+                            class_weights: torch.Tensor | None = None,
+                            bag_mask: torch.Tensor | None = None) -> torch.Tensor:
+    if instance_probs.dim() != 3 or bag_labels.shape != (instance_probs.shape[0], instance_probs.shape[2]):
+        raise ValueError("Expected [batch, time, classes] probabilities and [batch, classes] labels")
+    probabilities = linear_softmax_pool(instance_probs).clamp(1e-7, 1 - 1e-7)
+    losses = F.binary_cross_entropy(probabilities, bag_labels, reduction="none")
+    if class_weights is not None:
+        losses = losses * class_weights.view(1, -1)
+    if bag_mask is None:
+        return losses.mean()
+    if bag_mask.dim() == 1:
+        bag_mask = bag_mask[:, None]
+    if bag_mask.shape != losses.shape and bag_mask.shape != (losses.shape[0], 1):
+        raise ValueError("Mask must match batch/classes or have one weight per bag")
+    weights = bag_mask.expand_as(losses)
+    return (losses * weights).sum() / weights.sum().clamp_min(1e-7)
+
+
+def encoder_configuration(model: CrowdReactionModel) -> dict | None:
+    """Architecture metadata needed to load frozen encoders without network access."""
+    encoder = getattr(model.feature_extractor, "encoder", None)
+    if encoder is None:
+        return None
+    if hasattr(encoder, "cfg"):
+        return dict(encoder.cfg.__dict__)
+    return encoder.config.to_dict()
+
+
+def load_checkpoint_model(config: dict, checkpoint_path: str, device: torch.device,
+                          model_factory=None) -> CrowdReactionModel:
+    """Load a complete classifier, preferring its saved architecture and task heads."""
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    saved = checkpoint.get("config", {})
+    model_config = dict(config.get("model", {}))
+    model_config.update(saved.get("model", {}))
+    data = dict(config["data"])
+    for key in ("sample_rate", "chunk_sec", "instance_sec"):
+        if key in saved.get("data", {}) and data[key] != saved["data"][key]:
+            raise ValueError(f"Config data.{key} must match the trained checkpoint")
+    factory = CrowdReactionModel if model_factory is None else model_factory
+    model = factory(
+        encoder_type=model_config.get("encoder_type", "beats"),
+        beats_checkpoint_path=model_config.get("beats_checkpoint_path"),
+        wav2vec2_model_name=model_config.get("wav2vec2_model_name", "facebook/wav2vec2-base"),
+        wav2vec2_layer_index=int(model_config.get("wav2vec2_layer_index", 3)),
+        wav2vec2_layer_indices=model_config.get("wav2vec2_layer_indices"),
+        cnn_config=model_config.get("cnn_config"),
+        encoder_config=checkpoint.get("encoder_config"),
+        mil_pooling=model_config.get("mil_pooling", "max"),
+        conditional_bag_pooling=model_config.get("conditional_bag_pooling", False),
+        head_hidden_dim=int(model_config.get("head_hidden_dim", 256)),
+        head_dropout=float(model_config.get("head_dropout", 0.1)),
+        sample_rate=int(data["sample_rate"]), chunk_sec=float(data["chunk_sec"]),
+        instance_sec=float(data["instance_sec"]), tasks_config=saved.get("tasks", config.get("tasks")),
+    ).to(device)
+    model.load_state_dict(checkpoint.get("model_state_dict", checkpoint))
+    model.eval()
+    return model

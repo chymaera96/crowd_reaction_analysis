@@ -1,0 +1,68 @@
+{
+  "model": "cnn",
+  "evaluation": {
+    "instance_sec": 0.04,
+    "event_threshold": 0.5,
+    "attribute_threshold": 0.5,
+    "event_collar_sec": 1.0,
+    "event_offset_ratio": 0.4
+  },
+  "metrics": {
+    "relevant_event": {
+      "segment": {
+        "precision": 0.8273300773300774,
+        "recall": 0.7677998111425873,
+        "f1": 0.7964541091194044
+      },
+      "event": {
+        "precision": 0.016233766233766232,
+        "recall": 0.2459016393442623,
+        "f1": 0.030456852791878174
+      }
+    },
+    "approval": {
+      "segment": {
+        "precision": 0.8332617103566824,
+        "recall": 0.522993931220499,
+        "f1": 0.6426381638909603
+      },
+      "event": {
+        "precision": 0.012269938650306749,
+        "recall": 0.16216216216216217,
+        "f1": 0.022813688212927754
+      }
+    },
+    "disapproval": {
+      "segment": {
+        "precision": 0.38127372416701816,
+        "recall": 0.3193217944189332,
+        "f1": 0.3475586312956555
+      },
+      "event": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0
+      }
+    }
+  },
+  "weak_metrics": {
+    "event": {
+      "macro_auroc": 0.9704861111111112,
+      "macro_average_precision": 0.9957599916888972,
+      "macro_precision": 0.9393939393939394,
+      "macro_f1": 0.9538461538461539
+    },
+    "approval": {
+      "macro_auroc": 0.8707070707070707,
+      "macro_average_precision": 0.9715995360532959,
+      "macro_precision": 0.84,
+      "macro_f1": 0.8842105263157894
+    },
+    "disapproval": {
+      "macro_auroc": 0.8362573099415205,
+      "macro_average_precision": 0.7993640931705723,
+      "macro_precision": 0.47058823529411764,
+      "macro_f1": 0.6153846153846153
+    }
+  }
+}
