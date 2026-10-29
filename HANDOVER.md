@@ -77,3 +77,31 @@ Clear polarity labels have weight 1 and unclear labels have weight 0.75.
 Crowd chorus supervises the event head. No-crowd bags supervise event absence;
 polarity losses are masked. Contradictory no-crowd and positive-event labels are
 masked. Strong annotation files define the validation sources.
+
+## Experimental notes
+
+wav2vec2 experiments used intermediate transformer-layer outputs as frozen
+features and also fused outputs from multiple layers. Fusion used a learned
+scalar weight per layer, normalized with softmax, to form a weighted sum of
+the temporally pooled layer representations before classification. Both
+intermediate-layer selection and layer fusion gave suboptimal results in the
+experiments conducted.
+
+Both wav2vec2 and BEATs can learn speech presence or absence as a shortcut for
+crowd activity. In particular, non-speech sections can be classified as crowd
+reactions even when no reaction occurs. Inspect predictions across speech
+pauses, silence, and background noise as well as actual applause, cheering, and
+booing; speech gaps alone should not trigger an event.
+
+The CNN–TCN transfers well to the archival-footage test recordings. Some
+misclassifications are associated with changes in equalisation within the
+recording, which alter the spectral balance of otherwise similar sounds.
+
+## Future work
+
+Explore encoders pretrained for paralinguistic information rather than speech
+recognition, then fine-tune them with a similar weak-supervision recipe. Retain
+the joint event and polarity objectives and compare their ability to distinguish
+crowd reactions from speech pauses. Include archival recordings with varying
+equalisation when assessing transfer, and investigate equalisation augmentation
+to reduce sensitivity to recording conditions.
