@@ -35,7 +35,11 @@ Place the supplied classifier checkpoints in `weights/`:
 The checkpoints include their encoder configuration and weights. Inference loads
 locally. The `weights/` directory is distributed separately from Git.
 
-## Inference
+## Single-file annotations and plots (`api.py`)
+
+Use `scripts/api.py` as the primary entry point to annotate one audio recording
+and generate its plot. You need the audio file and a matching configuration and
+checkpoint; training data and ground-truth labels are not required.
 
 Run the joint CNN–TCN model on an audio file:
 
@@ -58,11 +62,29 @@ The API writes:
 - `scores.json`: temporal probability scores.
 - `plot.png`: spectrogram, predictions, and score functions.
 
+For the command above, these files are saved in `annotations/example/`.
+For another recording, change `--audio` and `--output-dir`.
+
+Load the original audio in Sonic Visualiser, then import
+`predicted_segments.csv` as a region annotation layer. The CSV has no header;
+its columns are start time in seconds, duration in seconds, and text label.
+For example:
+
+```csv
+12.400,2.800,approval
+31.200,1.600,disapproval
+```
+
+The first example region runs from 12.4 to 15.2 seconds. The second column is
+the duration, rather than the end time.
+
 `--mode polarity` exports approval/disapproval segments. `--mode event` exports
 `relevant_event` segments. Override thresholds with `--event-threshold` and
 `--attribute-threshold`. `--median-filter-sec` controls segment smoothing (default
 3 seconds); use `0` to retain raw thresholded boundaries. `--no-score-functions`
-hides score curves. Add `--annotations /path/to/labels.txt` to overlay ground truth.
+hides score curves. Add `--annotations /path/to/labels.txt` to overlay ground truth
+on the plot. These optional input labels use tab-separated onset, offset, and
+label rows; they are distinct from the generated start/duration CSV.
 
 The saved MLK speech annotations are in `annotations/mlk.csv`.
 
