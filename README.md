@@ -24,7 +24,25 @@ python -m pip install -e ".[test]"
 
 ## Models and weights
 
-Place the supplied classifier checkpoints in `weights/`:
+Download all three classifier checkpoints from the
+[v0.1.0 release](https://github.com/chymaera96/crowd_reaction_analysis/releases/tag/v0.1.0):
+
+```bash
+python scripts/download_weights.py
+```
+
+The downloader uses only the Python standard library, saves files in `weights/`,
+and verifies their size and SHA-256 checksums against `configs/model_weights.json`.
+Existing matching files are verified and skipped. To download just one model:
+
+```bash
+python scripts/download_weights.py --model cnn_tcn
+```
+
+Use `--output-dir /path/to/weights` for another destination, or `--force` to
+replace an existing checkpoint. Interrupted or invalid downloads are discarded
+without replacing an existing file. You can also download the `.pt` files
+manually from the release and place them in `weights/`.
 
 | Model | Configuration | Local weights | Output rate |
 |---|---|---|---|
@@ -33,7 +51,9 @@ Place the supplied classifier checkpoints in `weights/`:
 | CNN–TCN, joint | `configs/cnn_tcn.yaml` | `weights/cnn_tcn.pt` | 25 Hz |
 
 The checkpoints include their encoder configuration and weights. Inference loads
-locally. The `weights/` directory is distributed separately from Git.
+locally after download; GitHub login and Git LFS are not required. The release
+contains the selected BEATs and joint CNN–TCN models and the wav2vec2 layer-3
+classifier described in HANDOVER.md. Model files remain outside Git history.
 
 ## Single-file annotations and plots (`api.py`)
 

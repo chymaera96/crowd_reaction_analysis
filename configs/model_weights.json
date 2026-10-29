@@ -1,0 +1,24 @@
+{
+  "repository": "chymaera96/crowd_reaction_analysis",
+  "release": "v0.1.0",
+  "models": {
+    "beats": {
+      "filename": "beats.pt",
+      "config": "configs/beats.yaml",
+      "size_bytes": 365324982,
+      "sha256": "1a00fa974f0ac25b33c88cf87d223c1dad1d63bf67a11fa82be005e2b835ee7d"
+    },
+    "wav2vec2": {
+      "filename": "wav2vec2.pt",
+      "config": "configs/wav2vec2.yaml",
+      "size_bytes": 379954135,
+      "sha256": "c2805ed30dc6c2c7c9cf3cd8ecca024b240b097f9607ce402df86610498b73f6"
+    },
+    "cnn_tcn": {
+      "filename": "cnn_tcn.pt",
+      "config": "configs/cnn_tcn.yaml",
+      "size_bytes": 894248,
+      "sha256": "285f89f195528b2ebaade5f7e4f9b65c902aa7b935a8c0f57c1a47dd07589ebe"
+    }
+  }
+}
