@@ -1,5 +1,10 @@
 # Crowd reaction analysis
 
+This is one of two parallel repositories of the same project, to be used
+together with the speech prosody pipeline in
+[alejandroheca/speech_prosody_analysis](https://github.com/alejandroheca/speech_prosody_analysis),
+which computes utterance-level prosodic features of the same recordings.
+
 Sound event detection for crowd presence, approval, and disapproval in speech audio.
 The primary architectures are BEATs, wav2vec2, and CNN–TCN.
 [HANDOVER.md](HANDOVER.md) describes their architectures and training recipes.
