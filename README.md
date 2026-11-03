@@ -176,6 +176,6 @@ python -m pytest -q
 
 ## Citation
 
-Hermida Carrillo, A. C., Bhattacharjee, A., & Benetos, E. *To the sound of your
+Hermida Carrillo, A. C., Bhattacharjee, A., & Benetos, E. (2026) [To the sound of your
 applause: a signal processing approach to crowd-speaker communication in political
-speeches.* UK and Ireland (UKIS) Workshop.
+speeches.](https://spiral.imperial.ac.uk/entities/publication/29bbc09e-718a-4190-a838-fa276b371e9a) *UK and Ireland (UKIS) Workshop.*
