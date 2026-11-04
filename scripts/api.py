@@ -26,6 +26,9 @@ from crowd_reaction.data import WeakChunkDataset, chunk_records_for_strong_audio
 
 
 API_MODES = ("polarity", "event")
+# Label written to predicted_segments.csv for each model output; event mode
+# exports crowd presence (the relevant_event head) as "crowd".
+EXPORT_LABEL_NAMES = {"relevant_event": "crowd"}
 
 
 @dataclass
@@ -52,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--mode",
         choices=API_MODES,
         default="polarity",
-        help="polarity exports approval/disapproval boxes; event exports only relevant_event boxes",
+        help="polarity exports approval/disapproval boxes; event exports only crowd boxes (relevant_event head)",
     )
     parser.add_argument("--event-threshold", type=float, default=None, help="Override relevant-event probability threshold")
     parser.add_argument("--attribute-threshold", type=float, default=None, help="Override approval/disapproval probability threshold")
@@ -69,6 +72,17 @@ def parse_args() -> argparse.Namespace:
         "--no-score-functions",
         action="store_true",
         help="Hide probability score functions and threshold lines from plot.png",
+    )
+    parser.add_argument(
+        "--label-scores",
+        action="store_true",
+        help="Append each segment's mean probability to its label, e.g. 'crowd mean=0.83'",
+    )
+    parser.add_argument(
+        "--min-mean-score",
+        type=float,
+        default=None,
+        help="Keep only segments whose mean probability is above this value (e.g. 0.8)",
     )
     parser.add_argument(
         "--no-progress",
@@ -366,8 +380,26 @@ def write_scores_json(result: InferenceResult, output_path: str | Path) -> None:
         json.dump(scores_as_dict(result), handle, indent=2)
 
 
-def write_predicted_segments_csv(result: InferenceResult, output_path: str | Path) -> None:
-    infer_utils.write_sonic_visualiser_regions(Path(output_path), result.predicted_regions)
+def region_mean_score(result: InferenceResult, onset: float, offset: float, label: str) -> float:
+    """Mean probability of label over the bins of [onset, offset)."""
+    column = result.scores[:, result.label_names.index(label)]
+    first = int(round(onset / result.instance_sec))
+    last = max(first + 1, int(round(offset / result.instance_sec)))
+    values = column[first:last]
+    return float(values.mean())
+
+
+def write_predicted_segments_csv(
+    result: InferenceResult, output_path: str | Path, *, label_scores: bool = False
+) -> None:
+    regions = []
+    for onset, offset, label in result.predicted_regions:
+        text = EXPORT_LABEL_NAMES.get(label, label)
+        if label_scores:
+            mean = region_mean_score(result, onset, offset, label)
+            text = f"{text} mean={mean:.2f}"
+        regions.append((onset, offset, text))
+    infer_utils.write_sonic_visualiser_regions(Path(output_path), regions)
 
 
 def plot_inference_result(
@@ -445,6 +477,13 @@ def main() -> None:
         show_progress=not args.no_progress,
     )
 
+    if args.min_mean_score is not None:
+        result.predicted_regions = [
+            (onset, offset, label)
+            for onset, offset, label in result.predicted_regions
+            if region_mean_score(result, onset, offset, label) > args.min_mean_score
+        ]
+
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     annotations = (
@@ -456,7 +495,7 @@ def main() -> None:
     segments_path = output_dir / "predicted_segments.csv"
     plot_path = output_dir / "plot.png"
     write_scores_json(result, scores_path)
-    write_predicted_segments_csv(result, segments_path)
+    write_predicted_segments_csv(result, segments_path, label_scores=args.label_scores)
     _plot_inference_result_with_config(
         result,
         plot_path,

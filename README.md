@@ -104,8 +104,11 @@ The first example region runs from 12.4 to 15.2 seconds. The second column is
 the duration, rather than the end time.
 
 `--mode polarity` exports approval/disapproval segments. `--mode event` exports
-`relevant_event` segments. Override thresholds with `--event-threshold` and
-`--attribute-threshold`. `--median-filter-sec` controls segment smoothing (default
+crowd segments, labelled `crowd` (the model's `relevant_event` head: any crowd
+reaction, whatever its polarity). Override thresholds with `--event-threshold` and
+`--attribute-threshold`. `--label-scores` appends each segment's mean probability to its label
+(e.g. `crowd mean=0.83`), and `--min-mean-score 0.8` keeps only segments whose mean
+probability is above 0.8. `--median-filter-sec` controls segment smoothing (default
 3 seconds); use `0` to retain raw thresholded boundaries. `--no-score-functions`
 hides score curves. Add `--annotations /path/to/labels.txt` to overlay ground truth
 on the plot. These optional input labels use tab-separated onset, offset, and
