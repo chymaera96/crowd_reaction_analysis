@@ -1,32 +1,37 @@
-"""Crowd reaction sound event detection package."""
+"""Crowd reaction classifiers and single-recording annotation API."""
+from importlib import import_module
 
-from .data import SplitDatasets, StrongEvent, WeakBagTargets, WeakChunkDataset, build_split_records, weak_row_to_targets
-from .eval import evaluate_multitask_weak, evaluate_strong, evaluate_weak
-from .model import (
-    CrowdReactionModel,
-    DummyFeatureExtractor,
-    FrozenWav2Vec2FeatureExtractor,
-    MultiTaskOutputs,
-    Wav2Vec2LayerScalarMix,
-    mmm_bag_loss,
-    mmm_bag_loss_from_probs,
-)
+__version__ = "0.2.0"
+_EXPORTS = {'SplitDatasets': 'data',
+ 'CrowdReactionModel': 'model',
+ 'DummyFeatureExtractor': 'model',
+ 'FrozenWav2Vec2FeatureExtractor': 'model',
+ 'MultiTaskOutputs': 'model',
+ 'Wav2Vec2LayerScalarMix': 'model',
+ 'StrongEvent': 'data',
+ 'WeakBagTargets': 'data',
+ 'WeakChunkDataset': 'data',
+ 'build_split_records': 'data',
+ 'weak_row_to_targets': 'data',
+ 'evaluate_multitask_weak': 'eval',
+ 'evaluate_strong': 'eval',
+ 'evaluate_weak': 'eval',
+ 'mmm_bag_loss': 'model',
+ 'mmm_bag_loss_from_probs': 'model',
+ 'CrowdDetector': 'api',
+ 'InferenceResult': 'api',
+ 'run_audio_inference': 'api',
+ 'region_mean_score': 'api',
+ 'write_predicted_segments_csv': 'api',
+ 'write_scores_json': 'api',
+ 'plot_inference_result': 'api',
+ 'get_weights': 'weights'}
+__all__ = list(_EXPORTS)
 
-__all__ = [
-    "SplitDatasets",
-    "CrowdReactionModel",
-    "DummyFeatureExtractor",
-    "FrozenWav2Vec2FeatureExtractor",
-    "MultiTaskOutputs",
-    "Wav2Vec2LayerScalarMix",
-    "StrongEvent",
-    "WeakBagTargets",
-    "WeakChunkDataset",
-    "build_split_records",
-    "weak_row_to_targets",
-    "evaluate_multitask_weak",
-    "evaluate_strong",
-    "evaluate_weak",
-    "mmm_bag_loss",
-    "mmm_bag_loss_from_probs",
-]
+
+def __getattr__(name):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(f".{_EXPORTS[name]}", __name__), name)
+    globals()[name] = value
+    return value

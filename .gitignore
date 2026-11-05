@@ -10,3 +10,5 @@ training/
 api_outputs/
 outputs/**/*.log
 outputs/**/scores.json
+build/
+dist/

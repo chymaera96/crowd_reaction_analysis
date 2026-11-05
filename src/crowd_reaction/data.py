@@ -5,12 +5,15 @@ from collections import OrderedDict
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 import numpy as np
-import pandas as pd
 import torch
 import torchaudio
+from . import audio as audio_io
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 
 APPROVAL_LABELS = {
@@ -105,6 +108,7 @@ def normalize_name(value: str) -> str:
 
 
 def _row_flag(row: pd.Series, column: str) -> int:
+    import pandas as pd
     value = row.get(column, 0)
     if pd.isna(value):
         return 0
@@ -203,7 +207,7 @@ def _convert_to_mono(waveform: torch.Tensor) -> torch.Tensor:
 
 
 def load_audio_mono(audio_path: str, sample_rate: int) -> torch.Tensor:
-    waveform, sr = torchaudio.load(audio_path)
+    waveform, sr = audio_io.load(audio_path)
     waveform = _resample_if_needed(waveform, sr, sample_rate)
     return _convert_to_mono(waveform).to(torch.float32)
 
@@ -334,6 +338,7 @@ def apply_audio_augmentation(
 
 
 def _truthy_strong_label(value: Any) -> bool:
+    import pandas as pd
     if pd.isna(value):
         return False
     if isinstance(value, str):
@@ -352,6 +357,7 @@ def _build_original_audio_index(original_audio_dir: str) -> dict[str, Path]:
 
 
 def _build_audio_info_index(audios_info_csv: str) -> dict[str, bool]:
+    import pandas as pd
     df = pd.read_csv(audios_info_csv)
     required = {"title", "strong_label"}
     missing = sorted(required - set(df.columns))
@@ -394,18 +400,9 @@ def _infer_validation_key(
 
 
 def _unlabeled_targets() -> WeakBagTargets:
-    return weak_row_to_targets(
-        pd.Series(
-            {
-                "clear_disapproval": 0,
-                "unclear_disapproval": 0,
-                "unclear_approval": 0,
-                "clear_approval": 0,
-                "no_crowd": 0,
-                "crowd_chorus": 0,
-            }
-        )
-    )
+    return WeakBagTargets(event_target=(0.0,), event_mask=0.0,
+                          approval_target=(0.0,), approval_mask=0.0,
+                          disapproval_target=(0.0,), disapproval_mask=0.0)
 
 
 def chunk_records_for_strong_audio(
@@ -414,7 +411,7 @@ def chunk_records_for_strong_audio(
     chunk_sec: float,
     split: str = "val",
 ) -> list[WeakChunkRecord]:
-    audio_info = torchaudio.info(str(audio_path))
+    audio_info = audio_io.info(str(audio_path))
     duration_sec = float(audio_info.num_frames) / float(audio_info.sample_rate)
     if duration_sec <= 0.0:
         duration_sec = float(chunk_sec)
@@ -556,6 +553,7 @@ def build_split_records(
     chunk_sec: float = 20.0,
     unclear_label_weight: float = 0.5,
 ) -> SplitDatasets:
+    import pandas as pd
     audio_info_index = _build_audio_info_index(audios_info_csv)
     original_audio_index = _build_original_audio_index(original_audio_dir)
     weak_df = pd.read_csv(weak_labels_csv)

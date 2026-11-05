@@ -8,11 +8,7 @@ from urllib.error import URLError
 
 import pytest
 
-SPEC = importlib.util.spec_from_file_location(
-    "download_weights", Path(__file__).resolve().parents[1] / "scripts/download_weights.py"
-)
-downloader = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(downloader)
+from crowd_reaction import weights as downloader
 
 
 def metadata(content):

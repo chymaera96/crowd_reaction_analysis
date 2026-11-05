@@ -1,119 +1,180 @@
 # Crowd reaction analysis
 
-This is one of two parallel repositories of the same project, to be used
-together with the speech prosody pipeline in
-[alejandroheca/speech_prosody_analysis](https://github.com/alejandroheca/speech_prosody_analysis),
-which computes utterance-level prosodic features of the same recordings.
-
-Sound event detection for crowd presence, approval, and disapproval in speech audio.
-The primary architectures are BEATs, wav2vec2, and CNN–TCN.
-[HANDOVER.md](HANDOVER.md) describes their architectures and training recipes.
+Crowd-event, approval, and disapproval detection for audio recordings. The default
+model is the joint CNN–TCN; BEATs and wav2vec2 are also available. This package
+supplies crowd detection to the
+[speech prosody pipeline](https://github.com/alejandroheca/speech_prosody_analysis).
+Users can install it directly without keeping a second repository checkout.
+[HANDOVER.md](HANDOVER.md) describes the architectures and training recipes.
 
 ## Installation
 
-Use Python 3.11 or 3.12. Run commands from the repository root.
+Use Python **3.13 or 3.14** in your application's environment. Install the wheel
+from the [package release](https://github.com/chymaera96/crowd_reaction_analysis/releases/tag/v0.2.0):
 
 ```bash
-python3.12 -m venv .venv
+python -m pip install https://github.com/chymaera96/crowd_reaction_analysis/releases/download/v0.2.0/crowd_reaction_analysis-0.2.0-py3-none-any.whl
+```
+
+CNN–TCN and BEATs use the base installation. For wav2vec2, add its optional
+Transformers dependency:
+
+```bash
+python -m pip install "crowd-reaction-analysis[wav2vec2] @ https://github.com/chymaera96/crowd_reaction_analysis/releases/download/v0.2.0/crowd_reaction_analysis-0.2.0-py3-none-any.whl"
+```
+
+The package supports PyTorch/TorchAudio 2.8 or newer within the 2.x series.
+Use a compatible TorchAudio build with your PyTorch installation. Audio decoding
+uses SoundFile; input recordings can be WAV, FLAC, or another format supported
+by your SoundFile/libsndfile installation. Audio is mixed to mono and resampled.
+For GPU environments, install the PyTorch/TorchAudio builds for the server's
+CUDA setup before installing this package.
+
+For development or training from a source checkout:
+
+```bash
+python3.14 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e ".[test]"
+python -m pip install -e ".[train,wav2vec2,test]"
 ```
 
-A Conda environment is also provided:
+Training and evaluation dependencies are optional and are included by `[train]`.
+The Conda recipe in `environment.yml` installs the base inference package.
+
+## Annotate one recording
+
+The installed command works from any directory. It automatically downloads the
+CNN–TCN checkpoint the first time it is needed:
 
 ```bash
-conda env create -f environment.yml
-conda activate crowd-reaction-analysis
-python -m pip install -e ".[test]"
+crowd-reaction --audio /path/to/speech.wav --output-dir annotations/example \
+  --mode event --label-scores --min-mean-score 0.8
 ```
 
-## Models and weights
+This detects any crowd reaction, uses the label `crowd`, appends each region's
+mean probability, and retains regions whose mean probability exceeds 0.8.
+For approval/disapproval annotations, use `--mode polarity` instead.
 
-Download all three classifier checkpoints from the
-[v0.1.0 release](https://github.com/chymaera96/crowd_reaction_analysis/releases/tag/v0.1.0):
+The command writes:
 
-```bash
-python scripts/download_weights.py
+- `predicted_segments.csv`: headerless Sonic Visualiser region annotations.
+- `scores.json`: temporal probability scores.
+- `plot.png`: spectrogram, predicted regions, and score functions.
+
+Load the original recording in Sonic Visualiser and import the CSV as a region
+annotation layer. Its columns are `start_seconds,duration_seconds,label`:
+
+```csv
+12.400000,2.800000,crowd mean=0.91
+31.200000,1.600000,crowd mean=0.87
 ```
 
-The downloader uses only the Python standard library, saves files in `weights/`,
-and verifies their size and SHA-256 checksums against `configs/model_weights.json`.
-Existing matching files are verified and skipped. To download just one model:
+The first region runs from 12.4 to 15.2 seconds. The second column is duration.
+Omit `--label-scores` for plain labels.
+
+Useful options:
+
+| Option | Effect |
+|---|---|
+| `--model cnn_tcn`, `beats`, or `wav2vec2` | Select the model; default is `cnn_tcn` |
+| `--device cpu` or `cuda` | Inference device; default is CPU |
+| `--batch-size 1` | Number of audio chunks processed together; default is 1 |
+| `--event-threshold`, `--attribute-threshold` | Override the model's probability thresholds |
+| `--median-filter-sec 3` | Segment smoothing window; use `0` to disable |
+| `--min-mean-score 0.8` | Retain segments with mean probability above 0.8 |
+| `--annotations labels.txt` | Overlay tab-separated onset/offset/label ground truth on the plot |
+| `--no-score-functions` | Hide probability curves and threshold lines |
+| `--no-progress` | Hide the batch progress bar |
+| `--cache-dir /path/to/cache` | Choose a model-weight cache directory |
+| `--checkpoint /path/to/model.pt` | Use local weights, including offline |
+| `--config /path/to/config.yaml` | Supply a custom configuration |
+
+BEATs or wav2vec2 use the same command with `--model beats` or
+`--model wav2vec2`; no configuration paths are needed for the released models.
+
+## Python API and prosody integration
+
+Create one detector and reuse it across recordings so the model is loaded once:
+
+```python
+from crowd_reaction import CrowdDetector
+
+detector = CrowdDetector(model="cnn_tcn", device="cpu")
+result = detector.predict(
+    "speech.wav", mode="event", min_mean_score=0.8, show_progress=False,
+)
+result.save("annotations/example", label_scores=True)
+```
+
+`result` exposes `predicted_regions` as `(onset, offset, label)` tuples, together
+with `scores`, `label_names`, `times_sec`, and `instance_sec`. Event scores use
+the internal name `relevant_event`; CSV export labels them `crowd`.
+
+The speech-prosody pipeline can use the detector directly and obtain the same
+start/end/mean-score tuples it currently consumes:
+
+```python
+regions = [
+    (onset, offset, result.region_mean_score(onset, offset, label))
+    for onset, offset, label in result.predicted_regions
+]
+```
+
+Install the package in the environment running the crowd-detection step, then
+replace the neighbouring-repository import with `from crowd_reaction import
+CrowdDetector`. Repository paths such as `CROWD_CNN_REPO` are unnecessary with
+this API. `result.save(..., plot=False)` writes only CSV and JSON. Call
+`run_audio_inference` from `crowd_reaction` for one-shot inference; use
+`CrowdDetector` when processing multiple recordings.
+
+## Models, downloads, and offline use
+
+| Model | Output rate | Release checkpoint |
+|---|---|---|
+| CNN–TCN, joint | 25 Hz | `cnn_tcn.pt` |
+| BEATs | 1 Hz | `beats.pt` |
+| wav2vec2, layer 3 | 2 Hz | `wav2vec2.pt` |
+
+Weights remain in the [v0.1.0 model release](https://github.com/chymaera96/crowd_reaction_analysis/releases/tag/v0.1.0).
+The package contains configurations and SHA-256 checksums, downloads only the
+selected model, and verifies existing and downloaded files. Weights are cached
+per user and model release: `~/Library/Caches/crowd_reaction/v0.1.0` on macOS,
+`~/.cache/crowd_reaction/v0.1.0` on Linux (or under `XDG_CACHE_HOME`), and
+`%LOCALAPPDATA%/crowd_reaction/v0.1.0` on Windows. Set `CROWD_REACTION_CACHE`
+to override the cache root, or pass `cache_dir` / `--cache-dir` to use an exact
+directory. Existing valid checkpoints are reused. Failed downloads never replace
+an existing checkpoint.
+
+Prefetch weights on a machine with internet access:
 
 ```bash
+crowd-reaction-download --model cnn_tcn --output-dir ./weights
+```
+
+Select several models with `--model cnn_tcn beats wav2vec2`. Use `--force` to
+replace a different existing checkpoint after verifying its replacement.
+For offline inference, pass the downloaded file:
+
+```python
+detector = CrowdDetector(checkpoint_path="weights/cnn_tcn.pt")
+```
+
+Each released checkpoint contains the encoder weights and architecture metadata;
+inference with an explicit checkpoint needs no network access. Custom trained
+models can use both `checkpoint_path` and `config_path`.
+
+## Existing source-checkout commands
+
+The original script entry points remain available from a checkout:
+
+```bash
+python scripts/api.py --audio /path/to/speech.wav --output-dir annotations/example --mode event
 python scripts/download_weights.py --model cnn_tcn
 ```
 
-Use `--output-dir /path/to/weights` for another destination, or `--force` to
-replace an existing checkpoint. Interrupted or invalid downloads are discarded
-without replacing an existing file. You can also download the `.pt` files
-manually from the release and place them in `weights/`.
-
-| Model | Configuration | Local weights | Output rate |
-|---|---|---|---|
-| BEATs | `configs/beats.yaml` | `weights/beats.pt` | 1 Hz |
-| wav2vec2 | `configs/wav2vec2.yaml` | `weights/wav2vec2.pt` | 2 Hz |
-| CNN–TCN, joint | `configs/cnn_tcn.yaml` | `weights/cnn_tcn.pt` | 25 Hz |
-
-The checkpoints include their encoder configuration and weights. Inference loads
-locally after download; GitHub login and Git LFS are not required. The release
-contains the selected BEATs and joint CNN–TCN models and the wav2vec2 layer-3
-classifier described in HANDOVER.md. Model files remain outside Git history.
-
-## Single-file annotations and plots (`api.py`)
-
-Use `scripts/api.py` as the primary entry point to annotate one audio recording
-and generate its plot. You need the audio file and a matching configuration and
-checkpoint; training data and ground-truth labels are not required.
-
-Run the joint CNN–TCN model on an audio file:
-
-```bash
-python scripts/api.py \
-  --config configs/cnn_tcn.yaml \
-  --checkpoint weights/cnn_tcn.pt \
-  --audio /path/to/audio.wav \
-  --output-dir annotations/example \
-  --mode polarity --batch-size 1 --device cpu
-```
-
-For BEATs or wav2vec2, replace the configuration and weight filenames with the
-corresponding pair from the table. Audio is resampled and mixed to mono.
-Use `--device cuda` for GPU inference.
-
-The API writes:
-
-- `predicted_segments.csv`: headerless Sonic Visualiser rows, `start_seconds,duration_seconds,label`.
-- `scores.json`: temporal probability scores.
-- `plot.png`: spectrogram, predictions, and score functions.
-
-For the command above, these files are saved in `annotations/example/`.
-For another recording, change `--audio` and `--output-dir`.
-
-Load the original audio in Sonic Visualiser, then import
-`predicted_segments.csv` as a region annotation layer. The CSV has no header;
-its columns are start time in seconds, duration in seconds, and text label.
-For example:
-
-```csv
-12.400,2.800,approval
-31.200,1.600,disapproval
-```
-
-The first example region runs from 12.4 to 15.2 seconds. The second column is
-the duration, rather than the end time.
-
-`--mode polarity` exports approval/disapproval segments. `--mode event` exports
-crowd segments, labelled `crowd` (the model's `relevant_event` head: any crowd
-reaction, whatever its polarity). Override thresholds with `--event-threshold` and
-`--attribute-threshold`. `--label-scores` appends each segment's mean probability to its label
-(e.g. `crowd mean=0.83`), and `--min-mean-score 0.8` keeps only segments whose mean
-probability is above 0.8. `--median-filter-sec` controls segment smoothing (default
-3 seconds); use `0` to retain raw thresholded boundaries. `--no-score-functions`
-hides score curves. Add `--annotations /path/to/labels.txt` to overlay ground truth
-on the plot. These optional input labels use tab-separated onset, offset, and
-label rows; they are distinct from the generated start/duration CSV.
-
+The legacy download script saves to the checkout's `weights/` directory;
+the installed download command uses the shared cache unless `--output-dir` is
+specified. Existing calls supplying `--config` and `--checkpoint` still work.
 The saved MLK speech annotations are in `annotations/mlk.csv`.
 
 ## Training data

@@ -25,11 +25,7 @@ from crowd_reaction.model import (
 )
 
 
-_INFER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "infer.py"
-_INFER_SPEC = importlib.util.spec_from_file_location("crowd_reaction_infer", _INFER_PATH)
-assert _INFER_SPEC is not None and _INFER_SPEC.loader is not None
-infer_module = importlib.util.module_from_spec(_INFER_SPEC)
-_INFER_SPEC.loader.exec_module(infer_module)
+from crowd_reaction import inference as infer_module
 
 _TRAIN_PATH = Path(__file__).resolve().parents[1] / "scripts" / "train.py"
 _TRAIN_SPEC = importlib.util.spec_from_file_location("crowd_reaction_train", _TRAIN_PATH)
@@ -43,12 +39,7 @@ assert _RESULTS_SPEC is not None and _RESULTS_SPEC.loader is not None
 results_module = importlib.util.module_from_spec(_RESULTS_SPEC)
 _RESULTS_SPEC.loader.exec_module(results_module)
 
-_API_PATH = Path(__file__).resolve().parents[1] / "scripts" / "api.py"
-_API_SPEC = importlib.util.spec_from_file_location("crowd_reaction_api", _API_PATH)
-assert _API_SPEC is not None and _API_SPEC.loader is not None
-api_module = importlib.util.module_from_spec(_API_SPEC)
-sys.modules[_API_SPEC.name] = api_module
-_API_SPEC.loader.exec_module(api_module)
+from crowd_reaction import api as api_module
 
 
 class DummyWav2Vec2StyleFeatureExtractor(torch.nn.Module):

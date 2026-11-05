@@ -58,26 +58,26 @@ def test_invalid_or_out_of_bounds_interval_fails(audit_dataset, capsys, bad_end)
 
 
 def test_partial_decode_fails(audit_dataset, monkeypatch, capsys):
-    original_load = checker.torchaudio.load
+    original_load = checker.audio_io.load
 
     def truncated(*args, **kwargs):
         waveform, rate = original_load(*args, **kwargs)
         return waveform[..., :-1], rate
 
-    monkeypatch.setattr(checker.torchaudio, 'load', truncated)
+    monkeypatch.setattr(checker.audio_io, 'load', truncated)
     assert checker.main() == 1
     assert 'truncated or inconsistent audio' in capsys.readouterr().out
 
 
 def test_nonfinite_audio_fails(audit_dataset, monkeypatch, capsys):
-    original_load = checker.torchaudio.load
+    original_load = checker.audio_io.load
 
     def nonfinite(*args, **kwargs):
         waveform, rate = original_load(*args, **kwargs)
         waveform[..., 0] = torch.nan
         return waveform, rate
 
-    monkeypatch.setattr(checker.torchaudio, 'load', nonfinite)
+    monkeypatch.setattr(checker.audio_io, 'load', nonfinite)
     assert checker.main() == 1
     assert 'non-finite samples' in capsys.readouterr().out
 

@@ -5,7 +5,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 import torch
-import torchaudio
+from crowd_reaction import audio as audio_io
 
 from crowd_reaction.data import (
     WeakChunkDataset,
@@ -25,7 +25,7 @@ from crowd_reaction.data import (
 
 def _write_audio(path: Path, waveform: torch.Tensor, sample_rate: int = 16000) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torchaudio.save(str(path), waveform.unsqueeze(0), sample_rate=sample_rate)
+    audio_io.save(str(path), waveform.unsqueeze(0), sample_rate=sample_rate)
 
 
 def _write_dataset_fixture(root: Path) -> tuple[Path, Path, Path, Path]:
@@ -306,7 +306,7 @@ def test_training_dataset_can_apply_augmentation_while_validation_is_unchanged(t
 
     assert train_item["waveform"].shape == val_item["waveform"].shape
     assert not torch.allclose(train_item["waveform"], val_item["waveform"])
-    decoded_waveform, _ = torchaudio.load(str(audio_path))
+    decoded_waveform, _ = audio_io.load(str(audio_path))
     assert torch.equal(val_item["waveform"], decoded_waveform[0])
 
 

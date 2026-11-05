@@ -15,7 +15,6 @@ from urllib.parse import parse_qs, urlparse
 
 import pandas as pd
 import torch
-import torchaudio
 import yaml
 
 
@@ -24,6 +23,7 @@ SRC = REPO_ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
+from crowd_reaction import audio as audio_io
 from crowd_reaction.data import (  # noqa: E402
     _truthy_strong_label,
     build_split_records,
@@ -213,7 +213,7 @@ def main() -> int:
             all_used_paths.update(negative_dir.glob("*.wav"))
         for path in sorted(all_used_paths):
             try:
-                audio_info = torchaudio.info(str(path))
+                audio_info = audio_io.info(str(path))
                 if audio_info.num_frames <= 0 or audio_info.sample_rate <= 0:
                     errors.append(f"empty or invalid audio: {path}")
                     continue
@@ -222,12 +222,12 @@ def main() -> int:
                     block_size = audio_info.sample_rate * 60
                     for offset in range(0, audio_info.num_frames, block_size):
                         expected = min(block_size, audio_info.num_frames - offset)
-                        waveform, rate = torchaudio.load(str(path), frame_offset=offset, num_frames=expected)
+                        waveform, rate = audio_io.load(str(path), frame_offset=offset, num_frames=expected)
                         if rate != audio_info.sample_rate or waveform.shape[-1] != expected:
                             raise ValueError(f"truncated or inconsistent audio at frame {offset}")
                         if not torch.isfinite(waveform).all():
                             raise ValueError(f"non-finite samples at frame {offset}")
-            except Exception as exc:  # torchaudio backend errors vary by installation
+            except Exception as exc:  # audio backend errors vary by installation
                 errors.append(f"cannot read audio {path}: {exc}")
         for audio_path, line_number, onset, offset in strong_intervals:
             if audio_path in duration_by_path and offset > duration_by_path[audio_path] + 0.05:
