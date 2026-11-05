@@ -234,6 +234,13 @@ CNN–TCN are in `outputs/<model>/`; the combined metric table is
 
 ## Tests
 
+The installed v0.2.0 wheel has been tested on an NVIDIA A100 80 GB with Python
+3.14.10, PyTorch 2.15.0, TorchAudio 2.11.1, and CUDA 13.2. CNN–TCN inference ran
+on CUDA with only the base dependencies installed. The Python API and installed
+CLI both generated annotation CSVs, score JSON, and plots. Full-recording
+inference on the 1,013-second MLK speech took about 9.5 seconds, excluding plot
+generation, with batch size 4 after the initial excerpt test.
+
 ```bash
 python -m pytest -q
 ```
